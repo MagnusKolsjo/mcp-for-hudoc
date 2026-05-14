@@ -30,8 +30,8 @@ HUDOC är Europadomstolens officiella databas. Åtkomsten är öppen — ingen a
 ## Installation
 
 ```bash
-git clone https://github.com/MagnusKolsjo/echr-hudoc-mcp.git
-cd echr-hudoc-mcp
+git clone https://github.com/MagnusKolsjo/mcp-for-hudoc.git
+cd mcp-for-hudoc
 
 python3 -m venv .venv --without-pip
 .venv/bin/python3 -m ensurepip
@@ -43,13 +43,31 @@ cp config.example.env .env
 
 ## Försynkning av metadata
 
-Synkar metadata för alla importance=1-mål (~11 600 st) och alla svenska mål (~2 400 st):
+`02_synka_metadata.py` synkar metadata för tre grupper av avgöranden:
+
+- Alla importance=1-mål (~2 800 st, alla stater)
+- Alla Key cases / Case Reports (~3 100 st, `doctypebranch=REPORTS`)
+- Alla mål med Sverige som svarandestat (~540 st, alla importance-nivåer)
+
+Första körningen hämtar allt från 1959. Efterföljande körningar hämtar bara nya och uppdaterade poster sedan senaste synkdatum.
 
 ```bash
 .venv/bin/python3 02_synka_metadata.py
 ```
 
-Skriptet är tillståndsbaserat — kör det igen för att hämta nya avgöranden sedan senaste synkdatum.
+Synka om allt från grunden:
+
+```bash
+.venv/bin/python3 02_synka_metadata.py --force-full
+```
+
+Installera daglig automatisk synk (launchd på macOS, cron på Linux):
+
+```bash
+.venv/bin/python3 02_synka_metadata.py --installera-schema
+```
+
+Tidpunkt och schemaläggare konfigureras via `CRON_SCHEMA` och `SCHEMALAGGARE` i `.env` (standard: 03:15 dagligen via launchd). På macOS med launchd körs missade jobb vid nästa uppvakning från viloläge.
 
 ## Konfiguration i MCP-klient
 
