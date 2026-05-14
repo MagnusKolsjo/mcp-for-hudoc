@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Miljövariabler
+.env
+
+# Loggar och cache
+logs/
+fulltext_cache/
+*.log
+
+# Databas (SQLite-fallback)
+*.db
+*.sqlite3
+
+# macOS
+.DS_Store
