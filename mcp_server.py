@@ -48,6 +48,17 @@ MCP_API_KEY   = os.getenv("MCP_API_KEY", "")
 HUDOC_TIMEOUT         = int(os.getenv("HUDOC_TIMEOUT", "30"))
 HUDOC_SOKRESULTAT_MAX = int(os.getenv("HUDOC_SOKRESULTAT_MAX", "50"))
 
+# Query-expansion (valfritt) — aktiveras via QUERY_EXPANSION_ENABLED=true i .env.
+# Stöder alla OpenAI-kompatibla endpoints (Claude, OpenAI, Ollama, LM Studio).
+QUERY_EXPANSION_ENABLED     = os.getenv("QUERY_EXPANSION_ENABLED", "false").lower() == "true"
+QUERY_EXPANSION_BASE_URL    = os.getenv("QUERY_EXPANSION_BASE_URL", "")
+QUERY_EXPANSION_API_KEY     = os.getenv("QUERY_EXPANSION_API_KEY", "")
+QUERY_EXPANSION_MODEL       = os.getenv("QUERY_EXPANSION_MODEL", "")
+QUERY_EXPANSION_PROMPT_FILE = os.getenv(
+    "QUERY_EXPANSION_PROMPT_FILE",
+    str(_SCRIPT_DIR / "prompts" / "expansion_prompt.txt"),
+)
+
 # HUDOC kräver rankingModelId och HTTP (ej HTTPS) för results-endpointen.
 RANKING_MODEL_ID = "4180000c-8692-45ca-ad63-74bc4163871b"
 
@@ -134,8 +145,51 @@ def _hamta_session() -> requests.Session:
     return _hudoc_session
 
 
+def expandera_fraga(query: str) -> list[str]:
+    """Expanderar söktermen med flerspråkiga MR-juridiska ekvivalenter via LLM.
+
+    Returnerar kompletterande söktermer på engelska, franska och svenska —
+    eller tom lista om expansion är inaktiverat eller misslyckas.
+
+    Aktiveras via QUERY_EXPANSION_ENABLED=true i .env.
+    Promptfilen (prompts/expansion_prompt.txt) kan redigeras fritt.
+    """
+    if not QUERY_EXPANSION_ENABLED:
+        return []
+
+    prompt_path = Path(QUERY_EXPANSION_PROMPT_FILE)
+    if not prompt_path.exists():
+        log.warning("Promptfil för query-expansion saknas: %s", prompt_path)
+        return []
+
+    try:
+        from openai import OpenAI
+
+        prompt_mall = prompt_path.read_text(encoding="utf-8")
+        prompt = prompt_mall.replace("{query}", query)
+
+        klient = OpenAI(
+            base_url=QUERY_EXPANSION_BASE_URL or None,
+            api_key=QUERY_EXPANSION_API_KEY or "placeholder",
+        )
+        svar = klient.chat.completions.create(
+            model=QUERY_EXPANSION_MODEL or "claude-haiku-4-5-20251001",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150,
+            temperature=0.1,
+        )
+        raw   = svar.choices[0].message.content.strip()
+        terms = [t.strip() for t in raw.split(",") if t.strip()]
+        log.info("Query-expansion: %r → %s", query, terms)
+        return terms[:10]
+
+    except Exception as exc:
+        log.warning("Query-expansion misslyckades (fortsätter utan): %s", exc)
+        return []
+
+
 def _bygg_query(
-    fritextsokning: Optional[str] = None,
+    soktermer: list[str],
     respondent: Optional[str] = None,
     artikel: Optional[int] = None,
     importance: Optional[int] = None,
@@ -147,11 +201,16 @@ def _bygg_query(
 
     HUDOC:s results-endpoint kräver bas-queryn med XRANK-struktur och rankingModelId.
     Extra filter läggs till med AND.
+
+    soktermer är en lista med OR-termer (manuella + LLM-genererade).
+    Flervordiga fraser citeras automatiskt för korrekt FAST-sökning.
     """
     extra: list[str] = []
 
-    if fritextsokning:
-        extra.append(fritextsokning)
+    if soktermer:
+        # Bygg OR-block: flervordiga fraser citeras, enkla ord lämnas nakna.
+        or_delar = [f'"{t}"' if " " in t else t for t in soktermer]
+        extra.append(f"({' OR '.join(or_delar)})")
 
     if respondent:
         extra.append(f"respondent={respondent.upper()}")
@@ -316,7 +375,10 @@ def echr_search(
     Använd echr_hamta_dom för att hämta fulltext för ett specifikt avgörande.
 
     Parametrar:
-      fritextsokning  Fritext mot titel och slutsats
+      fritextsokning  Fritext mot titel och slutsats. Kommaseparerade termer
+                      behandlas som OR (t.ex. "privatliv, private life, vie privée").
+                      Om QUERY_EXPANSION_ENABLED=true i .env expanderas söktermen
+                      automatiskt med flerspråkiga ekvivalenter via LLM.
       respondent      Svarandestat som tre-bokstavs ISO-kod, t.ex. "SWE", "DEU", "FRA"
       artikel         Artikel i Europakonventionen, t.ex. 6 (rättvis rättegång),
                       8 (privatliv), 10 (yttrandefrihet)
@@ -329,8 +391,23 @@ def echr_search(
       antal           Antal resultat att returnera (standard 20, max 50)
     """
     antal = min(antal, HUDOC_SOKRESULTAT_MAX)
+
+    # Bygg lista med alla söktermer (OR-logik).
+    # Kommaseparerade termer i fritextsokning bevaras som fraser — ingen split på mellanslag.
+    if fritextsokning:
+        if "," in fritextsokning:
+            soktermer_delar = [t.strip() for t in fritextsokning.split(",") if t.strip()]
+        else:
+            soktermer_delar = [fritextsokning.strip()]
+    else:
+        soktermer_delar = []
+
+    # Query-expansion: flerspråkiga ekvivalenter via valfritt LLM-anrop.
+    extra_termer = expandera_fraga(fritextsokning) if fritextsokning else []
+    alla_termer  = soktermer_delar + extra_termer
+
     query = _bygg_query(
-        fritextsokning=fritextsokning,
+        soktermer=alla_termer,
         respondent=respondent,
         artikel=artikel,
         importance=importance,
@@ -339,7 +416,8 @@ def echr_search(
         samling=samling,
     )
 
-    log.info("echr_search: query=%s start=%d antal=%d", query[:100], start, antal)
+    log.info("echr_search: soktermer=%s expansion=%s start=%d antal=%d",
+             soktermer_delar, extra_termer, start, antal)
 
     try:
         svar = _hudoc_sok_live(query, start=start, antal=antal)
@@ -357,6 +435,7 @@ def echr_search(
         "start": start,
         "antal_returnerade": len(rader),
         "nasta_start": start + len(rader) if start + len(rader) < totalt else None,
+        "expansion": extra_termer if extra_termer else None,
         "resultat": _formattera_sokresultat(rader),
     }
 
@@ -420,7 +499,7 @@ def echr_hamta_dom(itemid: str) -> dict:
                 db.spara_avgorande({
                     "itemid":            kol.get("itemid", itemid),
                     "appno":             kol.get("appno", ""),
-                    "domsatum":          _datum(kol.get("judgementdate")),
+                    "domsdatum":         _datum(kol.get("judgementdate")),
                     "publiceringsdatum": _datum(kol.get("kpdate")),
                     "svarandestat":      kol.get("respondent", ""),
                     "ecli":              kol.get("ecli", ""),

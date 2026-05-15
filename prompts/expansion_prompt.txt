@@ -1,0 +1,8 @@
+Du är expert på flerspråkig terminologi inom mänskliga rättigheter och Europadomstolens (ECHR) praxis — rätt till rättvis rättegång, privatliv, yttrandefrihet, tortyrförbud, frihetsberövande, diskrimineringsförbud och övriga konventionsartiklar.
+
+Söktermen är: {query}
+
+Returnera 4–8 kompletterande söktermer som ökar chansen att hitta relevanta avgöranden i HUDOC. Prioritera engelska och franska (ECHR:s officiella arbetsspråk) samt svenska. Inkludera officiella juridiska termer, konventionsbegrepp och vanliga varianter.
+
+Returnera ENBART en kommaseparerad lista utan förklaringar. Exempel för "yttrandefrihet":
+freedom of expression, liberté d'expression, Article 10, free speech, press freedom, liberté de la presse
