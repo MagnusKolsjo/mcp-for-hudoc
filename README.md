@@ -1,4 +1,4 @@
-# echr-hudoc-mcp
+# mcp-for-hudoc
 
 MCP-server som ger AI-verktyg åtkomst till Europadomstolens för mänskliga rättigheters (ECHR) rättspraxis via HUDOC-databasen.
 
@@ -43,31 +43,13 @@ cp config.example.env .env
 
 ## Försynkning av metadata
 
-`02_synka_metadata.py` synkar metadata för tre grupper av avgöranden:
-
-- Alla importance=1-mål (~2 800 st, alla stater)
-- Alla Key cases / Case Reports (~3 100 st, `doctypebranch=REPORTS`)
-- Alla mål med Sverige som svarandestat (~540 st, alla importance-nivåer)
-
-Första körningen hämtar allt från 1959. Efterföljande körningar hämtar bara nya och uppdaterade poster sedan senaste synkdatum.
+Synkar metadata för alla importance=1-mål (~11 600 st) och alla svenska mål (~2 400 st):
 
 ```bash
 .venv/bin/python3 02_synka_metadata.py
 ```
 
-Synka om allt från grunden:
-
-```bash
-.venv/bin/python3 02_synka_metadata.py --force-full
-```
-
-Installera daglig automatisk synk (launchd på macOS, cron på Linux):
-
-```bash
-.venv/bin/python3 02_synka_metadata.py --installera-schema
-```
-
-Tidpunkt och schemaläggare konfigureras via `CRON_SCHEMA` och `SCHEMALAGGARE` i `.env` (standard: 03:15 dagligen via launchd). På macOS med launchd körs missade jobb vid nästa uppvakning från viloläge.
+Skriptet är tillståndsbaserat — kör det igen för att hämta nya avgöranden sedan senaste synkdatum.
 
 ## Konfiguration i MCP-klient
 
@@ -77,7 +59,7 @@ Lägg till i din MCP-klients konfiguration:
 "echr-hudoc": {
   "command": "/absolut/sökväg/till/.venv/bin/python3",
   "args": ["/absolut/sökväg/till/mcp_server.py"],
-  "cwd": "/absolut/sökväg/till/echr-hudoc-mcp"
+  "cwd": "/absolut/sökväg/till/mcp-for-hudoc"
 }
 ```
 
