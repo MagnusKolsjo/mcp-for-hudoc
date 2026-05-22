@@ -33,6 +33,7 @@ from bs4 import BeautifulSoup
 from mcp.server.fastmcp import FastMCP
 
 import db
+from hudoc_query import _HUDOC_BAS_QUERY, SELECT_FALT, RANKING_MODEL_ID
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -57,47 +58,6 @@ QUERY_EXPANSION_MODEL       = os.getenv("QUERY_EXPANSION_MODEL", "")
 QUERY_EXPANSION_PROMPT_FILE = os.getenv(
     "QUERY_EXPANSION_PROMPT_FILE",
     str(_SCRIPT_DIR / "prompts" / "expansion_prompt.txt"),
-)
-
-# HUDOC kräver rankingModelId och HTTP (ej HTTPS) för results-endpointen.
-RANKING_MODEL_ID = "4180000c-8692-45ca-ad63-74bc4163871b"
-
-# Bas-query med obligatorisk XRANK-struktur.
-_HUDOC_BAS_QUERY = (
-    "(((((((((((((((((((( contentsitename:ECHR "
-    "AND (NOT (doctype=PR OR doctype=HFCOMOLD OR doctype=HECOMOLD))) "
-    "XRANK(cb=14) doctypebranch:GRANDCHAMBER) "
-    "XRANK(cb=13) doctypebranch:DECGRANDCHAMBER) "
-    "XRANK(cb=12) doctypebranch:CHAMBER) "
-    "XRANK(cb=11) doctypebranch:ADMISSIBILITY) "
-    "XRANK(cb=10) doctypebranch:COMMITTEE) "
-    "XRANK(cb=9) doctypebranch:ADMISSIBILITYCOM) "
-    "XRANK(cb=8) doctypebranch:DECCOMMISSION) "
-    "XRANK(cb=7) doctypebranch:COMMUNICATEDCASES) "
-    "XRANK(cb=6) doctypebranch:CLIN) "
-    "XRANK(cb=5) doctypebranch:ADVISORYOPINIONS) "
-    "XRANK(cb=4) doctypebranch:REPORTS) "
-    "XRANK(cb=3) doctypebranch:EXECUTION) "
-    "XRANK(cb=2) doctypebranch:MERITS) "
-    "XRANK(cb=1) doctypebranch:SCREENINGPANEL) "
-    "XRANK(cb=4) importance:1) "
-    "XRANK(cb=3) importance:2) "
-    "XRANK(cb=2) importance:3) "
-    "XRANK(cb=1) importance:4) "
-    "XRANK(cb=2) languageisocode:ENG) "
-    "XRANK(cb=1) languageisocode:FRE"
-)
-
-FULLTEXT_CACHE_DIR = Path(
-    os.getenv("ECHR_FULLTEXT_CACHE_DIR", "") or str(_SCRIPT_DIR / "fulltext_cache")
-)
-if not FULLTEXT_CACHE_DIR.is_absolute():
-    FULLTEXT_CACHE_DIR = _SCRIPT_DIR / FULLTEXT_CACHE_DIR
-FULLTEXT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-SELECT_FALT = (
-    "itemid,appno,judgementdate,kpdate,respondent,ecli,"
-    "doctypebranch,importance,article,conclusion,languageisocode,typedescription"
 )
 
 # ---------------------------------------------------------------------------
@@ -136,7 +96,7 @@ def _hamta_session() -> requests.Session:
     if _hudoc_session is None:
         s = requests.Session()
         s.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "mcp-for-hudoc/1.0 (+https://github.com/MagnusKolsjo/mcp-for-hudoc)",
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "en-US,en;q=0.9",
         })
@@ -229,7 +189,10 @@ def _bygg_query(
         extra.append(f"kpdate<=\"{ar_till}-12-31\"")
 
     if samling:
-        extra.append(f"doctypebranch={samling.upper()}")
+        # documentcollectionid2 med citattecken är rätt fält för samlingsvärden
+        # som GRANDCHAMBER, CHAMBER, DECISIONS, JUDGMENTS, COMMUNICATEDCASES, CLIN.
+        # doctypebranch=VÄRDE (utan citattecken) ger 0 träffar för de flesta värden.
+        extra.append(f'documentcollectionid2:"{samling.upper()}"')
 
     if extra:
         # OBS: Lägg INTE extra parenteser runt bas-queryn — XRANK-syntaxen bryts då.
@@ -256,22 +219,42 @@ def _hudoc_sok_live(query: str, start: int = 0, antal: int = 20) -> dict:
     return svar.json()
 
 
+def _iso_datum(s: str | None) -> str | None:
+    """Parsar HUDOC-datumsträngar (DD/MM/YYYY HH:MM:SS eller ISO) till YYYY-MM-DD."""
+    from datetime import datetime
+    if not s:
+        return None
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s.strip(), fmt).date().isoformat()
+        except ValueError:
+            continue
+    return s.strip() or None
+
+
 def _formattera_sokresultat(hudoc_rader: list[dict]) -> list[dict]:
-    """Konverterar HUDOC-rådata till ett rent svarsformat."""
+    """Konverterar HUDOC-rådata till ett rent svarsformat.
+
+    datum           = domsdatum (judgementdate) på ISO-format YYYY-MM-DD
+    publiceringsdatum = publiceringsdatum i HUDOC (kpdate) på ISO-format
+    OBS: ar_fran/ar_till i sökverktygen filtrerar på publiceringsdatum (kpdate),
+    inte på domsdatum.
+    """
     resultat = []
     for rad in hudoc_rader:
         kol = rad.get("columns", {})
         resultat.append({
-            "itemid":       kol.get("itemid", ""),
-            "appno":        kol.get("appno", ""),
-            "datum":        kol.get("judgementdate", ""),
-            "respondent":   kol.get("respondent", ""),
-            "ecli":         kol.get("ecli", ""),
-            "samling":      kol.get("doctypebranch", ""),
-            "importance":   kol.get("importance", ""),
-            "artikel":      kol.get("article", ""),
-            "slutsats":     kol.get("conclusion", ""),
-            "sprak":        kol.get("languageisocode", ""),
+            "itemid":            kol.get("itemid", ""),
+            "appno":             kol.get("appno", ""),
+            "datum":             _iso_datum(kol.get("judgementdate")),
+            "publiceringsdatum": _iso_datum(kol.get("kpdate")),
+            "respondent":        kol.get("respondent", ""),
+            "ecli":              kol.get("ecli", ""),
+            "samling":           kol.get("doctypebranch", ""),
+            "importance":        kol.get("importance", ""),
+            "artikel":           kol.get("article", ""),
+            "slutsats":          kol.get("conclusion", ""),
+            "sprak":             kol.get("languageisocode", ""),
         })
     return resultat
 
@@ -383,10 +366,13 @@ def echr_search(
       artikel         Artikel i Europakonventionen, t.ex. 6 (rättvis rättegång),
                       8 (privatliv), 10 (yttrandefrihet)
       importance      Prioritet: 1=hög, 2=medel, 3=låg
-      ar_fran         Publiceringsår fr.o.m. (t.ex. 2010)
-      ar_till         Publiceringsår t.o.m. (t.ex. 2024)
-      samling         Dokumentsamling: GRANDCHAMBER, CHAMBER, DECISIONS,
-                      JUDGMENTS, COMMUNICATEDCASES, CLIN
+      ar_fran         Publiceringsår i HUDOC fr.o.m. (kpdate, t.ex. 2010).
+                      OBS: filtrerar på publiceringsdatum, inte domsdatum.
+      ar_till         Publiceringsår i HUDOC t.o.m. (kpdate, t.ex. 2024)
+      samling         Dokumentsamling (documentcollectionid2-värden):
+                      GRANDCHAMBER (stor kammaredomar), CHAMBER (kammaredomar),
+                      JUDGMENTS (alla domar inkl. äldre), DECISIONS (beslut),
+                      COMMUNICATEDCASES (kommunicerade mål), CLIN (sammanfattningar)
       start           Sidnumrering: startindex (standard 0)
       antal           Antal resultat att returnera (standard 20, max 50)
     """
@@ -459,11 +445,14 @@ def echr_hamta_dom(itemid: str) -> dict:
     cachad = db.hamta_fulltext_fran_cache(itemid)
     if cachad:
         log.info("echr_hamta_dom: serverar från cache")
+        # Hämta sprak från metadata-cachen för konsekvent svarstruktur
+        meta = db.hamta_avgorande(itemid)
         return {
-            "itemid": itemid,
-            "kalla": "cache",
+            "itemid":      itemid,
+            "kalla":       "cache",
+            "sprak":       meta.get("sprak") if meta else None,
             "antal_tecken": len(cachad),
-            "fulltext": cachad,
+            "fulltext":    cachad,
         }
 
     # Hämta från HUDOC med språkfallback
@@ -541,11 +530,11 @@ def echr_hamta_svenska_mal(
     respondent=SWE explicit. Alla parametrar är valfria.
 
     Parametrar:
-      ar_fran    Publiceringsår fr.o.m.
-      ar_till    Publiceringsår t.o.m.
+      ar_fran    Publiceringsår i HUDOC fr.o.m. (kpdate — OBS: ej domsdatum)
+      ar_till    Publiceringsår i HUDOC t.o.m.
       importance Prioritet: 1=hög (~173 svenska mål), 2=medel, 3=låg
       artikel    Artikel i Europakonventionen, t.ex. 6, 8, 10
-      samling    GRANDCHAMBER, CHAMBER, DECISIONS m.fl.
+      samling    GRANDCHAMBER, CHAMBER, JUDGMENTS, DECISIONS, COMMUNICATEDCASES, CLIN
       start      Sidnumrering: startindex
       antal      Antal resultat (standard 20, max 50)
     """

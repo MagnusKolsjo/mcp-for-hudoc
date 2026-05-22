@@ -35,12 +35,16 @@ load_dotenv()
 
 import requests
 import db
+from hudoc_query import _HUDOC_BAS_QUERY, SELECT_FALT, RANKING_MODEL_ID
 
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
 
 _SCRIPT_DIR = Path(__file__).parent.resolve()
+
+# Skapa log-mappen INNAN logging.basicConfig — FileHandler kräver att mappen finns.
+(_SCRIPT_DIR / "logs").mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,48 +54,11 @@ logging.basicConfig(
         logging.FileHandler(_SCRIPT_DIR / "logs" / "synk.log", encoding="utf-8"),
     ],
 )
-(_SCRIPT_DIR / "logs").mkdir(parents=True, exist_ok=True)
 log = logging.getLogger(__name__)
 
 HUDOC_SOKRESULTAT_MAX = 500          # Max poster per HUDOC-anrop (HUDOC tillåter upp till 500)
 HUDOC_TIMEOUT         = 30           # Sekunder
 HUDOC_PAUS_SEKUNDER   = 0.3          # Paus mellan anrop för att inte hammra API:t
-
-# HUDOC kräver en specifik rankingModelId för att results-endpointen ska svara.
-# Utan denna parameter returnerar endpointen 404.
-RANKING_MODEL_ID = "4180000c-8692-45ca-ad63-74bc4163871b"
-
-# Bas-query med XRANK-rankning — exakt det format HUDOC förväntar sig.
-# Utan contentsitename:ECHR och XRANK-strukturen returnerar endpointen 404.
-_HUDOC_BAS_QUERY = (
-    "(((((((((((((((((((( contentsitename:ECHR "
-    "AND (NOT (doctype=PR))) "
-    "XRANK(cb=14) doctypebranch:GRANDCHAMBER) "
-    "XRANK(cb=13) doctypebranch:DECGRANDCHAMBER) "
-    "XRANK(cb=12) doctypebranch:CHAMBER) "
-    "XRANK(cb=11) doctypebranch:ADMISSIBILITY) "
-    "XRANK(cb=10) doctypebranch:COMMITTEE) "
-    "XRANK(cb=9) doctypebranch:ADMISSIBILITYCOM) "
-    "XRANK(cb=8) doctypebranch:DECCOMMISSION) "
-    "XRANK(cb=7) doctypebranch:COMMUNICATEDCASES) "
-    "XRANK(cb=6) doctypebranch:CLIN) "
-    "XRANK(cb=5) doctypebranch:ADVISORYOPINIONS) "
-    "XRANK(cb=4) doctypebranch:REPORTS) "
-    "XRANK(cb=3) doctypebranch:EXECUTION) "
-    "XRANK(cb=2) doctypebranch:MERITS) "
-    "XRANK(cb=1) doctypebranch:SCREENINGPANEL) "
-    "XRANK(cb=4) importance:1) "
-    "XRANK(cb=3) importance:2) "
-    "XRANK(cb=2) importance:3) "
-    "XRANK(cb=1) importance:4) "
-    "XRANK(cb=2) languageisocode:ENG) "
-    "XRANK(cb=1) languageisocode:FRE"
-)
-
-SELECT_FALT = (
-    "itemid,appno,judgementdate,kpdate,respondent,ecli,"
-    "doctypebranch,importance,article,conclusion,languageisocode,typedescription"
-)
 
 # ---------------------------------------------------------------------------
 # HUDOC-hjälpfunktioner
@@ -101,7 +68,7 @@ def _bygg_hudoc_session() -> requests.Session:
     """Skapar en requests-session med rätt headers för HUDOC."""
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "mcp-for-hudoc/1.0 (+https://github.com/MagnusKolsjo/mcp-for-hudoc)",
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Accept-Language": "en-US,en;q=0.9",
     })
@@ -207,7 +174,7 @@ def _konvertera_rad(hudoc_rad: dict) -> dict:
     return {
         "itemid":           kolumner.get("itemid", ""),
         "appno":            kolumner.get("appno", ""),
-        "domsatum":         _datum(kolumner.get("judgementdate")),
+        "domsdatum":        _datum(kolumner.get("judgementdate")),
         "publiceringsdatum": _datum(kolumner.get("kpdate")),
         "svarandestat":     kolumner.get("respondent", ""),
         "ecli":             kolumner.get("ecli", ""),
@@ -315,7 +282,7 @@ def installera_schema(script_sokvag: str, python_sokvag: str) -> None:
             return
 
         plist_dir = Path.home() / "Library" / "LaunchAgents"
-        plist_fil = plist_dir / "se.riksdag-ai.echr-hudoc-synk.plist"
+        plist_fil = plist_dir / "se.magnuskolsjo.mcp-echr-synk.plist"
         plist_dir.mkdir(parents=True, exist_ok=True)
 
         delar  = cron_schema.split()
@@ -327,7 +294,7 @@ def installera_schema(script_sokvag: str, python_sokvag: str) -> None:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>se.riksdag-ai.echr-hudoc-synk</string>
+    <string>se.magnuskolsjo.mcp-echr-synk</string>
     <key>ProgramArguments</key>
     <array>
         <string>{python_abs}</string>

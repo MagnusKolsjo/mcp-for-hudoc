@@ -10,10 +10,9 @@ venv/
 
 # Loggar och cache
 logs/
-fulltext_cache/
 *.log
 
-# Databas (SQLite-fallback)
+# Databas (SQLite)
 *.db
 *.sqlite3
 

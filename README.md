@@ -24,7 +24,7 @@ HUDOC är Europadomstolens officiella databas. Åtkomsten är öppen — ingen a
 ## Krav
 
 - Python 3.11+
-- PostgreSQL med pgvector (rekommenderas) eller SQLite (fallback)
+- PostgreSQL eller SQLite (välj efter behov)
 - Nätverksåtkomst till hudoc.echr.coe.int
 
 ## Installation
@@ -43,7 +43,10 @@ cp config.example.env .env
 
 ## Försynkning av metadata
 
-Synkar metadata för alla importance=1-mål (~11 600 st) och alla svenska mål (~2 400 st):
+Synkar metadata för ~6 500 avgöranden via tre filter:
+- Alla importance=1-avgöranden (~2 800 st, alla stater)
+- Alla Case Reports / Key cases (~3 100 st, doctypebranch=REPORTS)
+- Alla avgöranden med Sverige som svarandestat (~540 st, alla nivåer)
 
 ```bash
 .venv/bin/python3 02_synka_metadata.py

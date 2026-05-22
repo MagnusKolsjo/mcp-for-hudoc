@@ -3,6 +3,36 @@
 Alla viktiga ändringar dokumenteras här. Formatet följer [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 och versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] — 2026-05-22
+
+### Fixat
+- **Bugg:** Stavfel `domsatum` → `domsdatum` i `_konvertera_rad()` i `02_synka_metadata.py` — domsdatum sparades aldrig i DB vid synk, vilket gav NULL i alla befintliga poster. Kör `--force-full` för att backfilla.
+- **Bugg:** `samling`-parametern gav 0 träffar för GRANDCHAMBER, DECISIONS och JUDGMENTS — filtret använde `doctypebranch=VÄRDE` (fel fält) istället för `documentcollectionid2:"VÄRDE"`.
+- **Bugg:** `02_synka_metadata.py` kraschade på frisk klon (`FileNotFoundError`) — `logs/`-mappen skapades efter `logging.basicConfig`. Ordning korrigerad.
+- `echr_hamta_dom` returnerar nu `sprak`-fältet konsekvent oavsett cache-träff eller HUDOC-hämtning.
+- `datum`-fältet i `echr_search` och `echr_hamta_svenska_mal` normaliseras nu till ISO-format (YYYY-MM-DD) i stället för råformat DD/MM/YYYY HH:MM:SS.
+
+### Tillagt
+- `publiceringsdatum`-fält (kpdate, ISO-format) i sökresultat — tydliggör att `ar_fran`/`ar_till` filtrerar på publiceringsdatum, inte domsdatum.
+- `hudoc_query.py`: gemensam modul med `_HUDOC_BAS_QUERY`, `SELECT_FALT` och `RANKING_MODEL_ID` — eliminerar drift mellan `mcp_server.py` och `02_synka_metadata.py`.
+- Migration-block i `db.py:initiera_schema()` — framtida `ALTER TABLE`-satser läggs där.
+
+### Borttaget
+- `FULLTEXT_CACHE_DIR`-variabeln och mapp-skapandet i `mcp_server.py` — dead code, all fulltext cachas i DB.
+- `ECHR_FULLTEXT_CACHE_DIR`-variabeln ur `config.example.env`.
+- `fulltext_cache/` ur `.gitignore`.
+
+### Ändrat
+- `config.example.env`: platshållare använder nu `<VERSALER>`-format (`<MCP_API_NYCKEL>`, `<DB_LOSENORD>`, `<DB_ANVANDARE>`).
+- `config.example.env` och `db.py`: "SQLite (fallback)" → neutrala formuleringar; PostgreSQL och SQLite beskrivs som symmetriska val.
+- `README.md`: "pgvector (rekommenderas)" borttaget — koden använder GIN/TSVECTOR, inte pgvector-extensionen.
+- `README.md`: synkbeskrivning uppdaterad med faktiska siffror (~6 500 poster) och alla tre filter.
+- Bas-query i `02_synka_metadata.py` uppdaterad att exkludera `doctype=HFCOMOLD OR doctype=HECOMOLD` (samma som `mcp_server.py` — drift eliminerad via gemensam modul).
+
+### Brytande
+- `datum`-fältets format ändrat: DD/MM/YYYY HH:MM:SS → YYYY-MM-DD. Klienter som parsade det gamla formatet måste uppdateras.
+- `publiceringsdatum`-fältet är nytt i sökresultaten (additivt, ej strikt brytande).
+
 ## [1.1.0] — 2026-05-15
 
 ### Tillagt

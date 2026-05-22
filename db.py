@@ -1,12 +1,12 @@
 """
 db.py — Databashantering för ECHR HUDOC MCP-servern.
 
-Stöder två backends via DATABASE_URL i .env:
+Välj backend via DATABASE_URL i .env:
   PostgreSQL  postgresql://anvandare:losenord@localhost:5432/databas
-              Rekommenderas — ger GIN-baserad fulltextsökning och TSVECTOR-index.
+              Rikt FTS-stöd via GIN-index och TSVECTOR (förberett, ej aktivt ännu).
   SQLite      sqlite:///echr_cache.db
-              Enklare installation utan extern databas.
-              Sökning sker med LIKE i stället för plainto_tsquery.
+              Enkel uppstart utan extern databas.
+              Sökning sker med LIKE; FTS5 är ej implementerat (framtida förbättring).
 
 Schema: echr  (PostgreSQL — namnrymd isolerad från övriga arbetsströmmar)
 Tabeller:
@@ -194,6 +194,10 @@ def initiera_schema():
 
     Väljer rätt DDL beroende på DATABASE_URL (PostgreSQL eller SQLite).
     Databasfel vid uppstart loggas som varning men stoppar inte servern.
+
+    Migrationer: lägg framtida ALTER TABLE-satser i migrationsblocket nedan.
+    Baseline-DDL (_DDL_POSTGRES/_DDL_SQLITE) ska inte ändras efter publicering —
+    alla schemaändringar går via migrationsblocket.
     """
     if not DATABASE_URL:
         log.warning("DATABASE_URL är inte satt — databasen används inte")
@@ -205,6 +209,9 @@ def initiera_schema():
             conn.autocommit = True
             with _cursor(conn) as cur:
                 cur.execute(_DDL_POSTGRES)
+                # --- Migrationer (lägg nya ALTER TABLE-satser här) ---
+                # (inga migrationer ännu)
+                # --- Slut migrationer ---
             conn.close()
         else:
             with _cursor(conn) as cur:
@@ -212,6 +219,9 @@ def initiera_schema():
                     sats = sats.strip()
                     if sats:
                         cur.execute(sats)
+                # --- Migrationer (lägg nya ALTER TABLE-satser här) ---
+                # (inga migrationer ännu)
+                # --- Slut migrationer ---
             conn.commit()
             conn.close()
         log.info("Databasschemat echr är klart (%s)", "PostgreSQL" if _ar_postgres() else "SQLite")
