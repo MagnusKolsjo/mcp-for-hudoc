@@ -3,6 +3,13 @@
 Alla viktiga ändringar dokumenteras här. Formatet följer [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 och versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-05-22
+
+### Fixat
+- `PYTHON_SOKVAG`-variabeln i `config.example.env` och `02_synka_metadata.py` hade ett icke-ASCII-tecken (`Ä`) i variabelnamnet — ersatt med rent ASCII.
+- Standardvärdet för `PYTHON_SOKVAG` i `02_synka_metadata.py` pekar nu korrekt på `.venv/bin/python3` relativt skriptmappen (oförändrat för fristående installation). Variabeln måste sättas i `.env` om venv-mappen avviker från standarden.
+- `config.example.env`: delad-venv-varianten (`../.venv/bin/python3`) dokumenteras nu som kommenterad alternativraden.
+
 ## [2.0.0] — 2026-05-22
 
 ### Fixat

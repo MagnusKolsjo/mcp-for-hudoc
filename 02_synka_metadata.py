@@ -257,7 +257,7 @@ def installera_schema(script_sokvag: str, python_sokvag: str) -> None:
       cron     — fungerar på Linux och macOS
 
     Tidpunkt styrs av CRON_SCHEMA i .env (standard: 03:15 varje natt).
-    Python-sökväg styrs av PYTHON_SOKVÄG i .env (standard: .venv/bin/python3
+    Python-sökväg styrs av PYTHON_SOKVAG i .env (standard: .venv/bin/python3
     relativt skriptmappen).
     """
     import platform
@@ -270,7 +270,7 @@ def installera_schema(script_sokvag: str, python_sokvag: str) -> None:
     skript_mapp   = Path(script_sokvag).parent.resolve()
 
     # Bygg absolut Python-sökväg
-    python_rel = os.getenv("PYTHON_SOKVÄG", ".venv/bin/python3")
+    python_rel = os.getenv("PYTHON_SOKVAG", ".venv/bin/python3")
     if not os.path.isabs(python_rel):
         python_abs = str(skript_mapp / python_rel)
     else:
@@ -361,7 +361,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.installera_schema:
-        python_sokvag = os.getenv("PYTHON_SOKVÄG", ".venv/bin/python3")
+        python_sokvag = os.getenv("PYTHON_SOKVAG", ".venv/bin/python3")
         installera_schema(__file__, python_sokvag)
     else:
         synka(force_full=args.force_full)
