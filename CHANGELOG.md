@@ -3,6 +3,28 @@
 Alla viktiga ändringar dokumenteras här. Formatet följer [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 och versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-08-10
+
+### Tillagt
+
+- **`max_tecken` och `fran_tecken` i `echr_hamta_dom`**, med standardtaket
+  `ECHR_MAX_TECKEN` (60 000 tecken, konfigurerbart i `.env`). Det största cachade
+  avgörandet är **358 097 tecken**; verktyget returnerade hela domtexten utan
+  möjlighet att begränsa. Kapade svar bär `trunkerad`, `tecken_totalt` och
+  `fortsatt_fran_tecken`, och kapas på ordgräns.
+- Taket tillämpas på **båda kodvägarna** — cacheträff och live-hämtning från HUDOC —
+  så att svarsstrukturen är densamma oavsett var texten kom ifrån.
+
+### Bakgrund
+
+Genomför projektets svarskontrakt (`00-las-forst.md` → "Svarskontraktet — storlek,
+trunkering, adressering och sökning"). Additiva parametrar och fält; inga brytande
+ändringar och inga schemaändringar. Cachen och databasen lagrar fortfarande hela
+texten — trunkeringen gäller bara svaret till anroparen, så sökning och indexering
+påverkas inte.
+
+---
+
 ## [2.0.1] — 2026-05-22
 
 ### Fixat

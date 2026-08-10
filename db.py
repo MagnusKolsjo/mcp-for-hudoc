@@ -8,7 +8,7 @@ Välj backend via DATABASE_URL i .env:
               Enkel uppstart utan extern databas.
               Sökning sker med LIKE; FTS5 är ej implementerat (framtida förbättring).
 
-Schema: echr  (PostgreSQL — namnrymd isolerad från övriga arbetsströmmar)
+Schema: echr  (PostgreSQL — namnrymd isolerad från övriga MCP-servrar)
 Tabeller:
   avgorande_cache  — cachad metadata per avgörande (nyckel: itemid)
   fulltext_cache   — cachad fulltext per avgörande (nyckel: itemid)

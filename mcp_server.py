@@ -77,6 +77,43 @@ def _konfigurera_logging() -> None:
 _konfigurera_logging()
 log = logging.getLogger(__name__)
 
+# Standardtak för domtext. Ett ECHR-avgörande når över 350 000 tecken; utan tak
+# som gäller by default riskerar svaret att bli onödigt stort. Anroparen kan
+# höja taket eller sätta 0 för hela texten.
+ECHR_MAX_TECKEN = int(os.getenv("ECHR_MAX_TECKEN", "60000"))
+
+def _skar_ut(text, max_tecken: int, fran_tecken: int = 0) -> dict:
+    """
+    Skär ut ett textutdrag och redovisa alltid vad som kapats.
+
+    Trunkering utan markering är ett tyst datafel — svaret ser ut att vara hela
+    innehållet. max_tecken <= 0 betyder ingen trunkering. Klipper på ordgräns.
+    """
+    text   = text or ""
+    totalt = len(text)
+    start  = max(0, min(fran_tecken, totalt))
+    rest   = text[start:]
+
+    if max_tecken and max_tecken > 0 and len(rest) > max_tecken:
+        utdrag    = rest[:max_tecken]
+        brytpunkt = max(utdrag.rfind(" "), utdrag.rfind("\n"))
+        if brytpunkt > max_tecken * 0.6:
+            utdrag = utdrag[:brytpunkt]
+        utdrag    = utdrag.rstrip()
+        trunkerad = True
+    else:
+        utdrag    = rest
+        trunkerad = False
+
+    slut = start + len(utdrag)
+    return {
+        "text":                 utdrag,
+        "tecken_totalt":        totalt,
+        "tecken_visade":        len(utdrag),
+        "trunkerad":            trunkerad,
+        "fortsatt_fran_tecken": slut if slut < totalt else None,
+    }
+
 # ---------------------------------------------------------------------------
 # MCP-server
 # ---------------------------------------------------------------------------
@@ -264,7 +301,7 @@ def _tysta_fd1():
     """OS-nivå omdirigering av FD 1 till loggfil under HTML-hämtning.
 
     Skyddar MCP-protokollets stdout från C-biblioteks diagnostikutskrifter.
-    Mönster etablerat i arbetsström 9 (gov-dokument/pdf_lib.py).
+    Etablerat mönster för PDF-extraktion med C-bindningar.
     """
     log_path = _SCRIPT_DIR / "logs" / "subprocess.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -427,7 +464,11 @@ def echr_search(
 
 
 @mcp.tool()
-def echr_hamta_dom(itemid: str) -> dict:
+def echr_hamta_dom(
+    itemid: str,
+    max_tecken: int = ECHR_MAX_TECKEN,
+    fran_tecken: int = 0,
+) -> dict:
     """Hämtar fulltext för ett ECHR-avgörande via dess itemid.
 
     Fulltexten hämtas on-demand från HUDOC och cachas lokalt i databasen
@@ -447,12 +488,17 @@ def echr_hamta_dom(itemid: str) -> dict:
         log.info("echr_hamta_dom: serverar från cache")
         # Hämta sprak från metadata-cachen för konsekvent svarstruktur
         meta = db.hamta_avgorande(itemid)
+        # Cachen har alltid hela texten — trunkeringen gäller bara svaret.
+        _u = _skar_ut(cachad, max_tecken, fran_tecken)
         return {
-            "itemid":      itemid,
-            "kalla":       "cache",
-            "sprak":       meta.get("sprak") if meta else None,
-            "antal_tecken": len(cachad),
-            "fulltext":    cachad,
+            "itemid":       itemid,
+            "kalla":        "cache",
+            "sprak":        meta.get("sprak") if meta else None,
+            "antal_tecken": _u["tecken_visade"],
+            "fulltext":     _u["text"],
+            "tecken_totalt":        _u["tecken_totalt"],
+            "trunkerad":            _u["trunkerad"],
+            "fortsatt_fran_tecken": _u["fortsatt_fran_tecken"],
         }
 
     # Hämta från HUDOC med språkfallback
@@ -505,12 +551,16 @@ def echr_hamta_dom(itemid: str) -> dict:
     # Cacha fulltexten
     db.spara_fulltext(itemid, text)
 
+    _u = _skar_ut(text, max_tecken, fran_tecken)
     return {
-        "itemid": itemid,
-        "kalla": "hudoc",
-        "sprak": anvant_sprak,
-        "antal_tecken": len(text),
-        "fulltext": text,
+        "itemid":       itemid,
+        "kalla":        "hudoc",
+        "sprak":        anvant_sprak,
+        "antal_tecken": _u["tecken_visade"],
+        "fulltext":     _u["text"],
+        "tecken_totalt":        _u["tecken_totalt"],
+        "trunkerad":            _u["trunkerad"],
+        "fortsatt_fran_tecken": _u["fortsatt_fran_tecken"],
     }
 
 

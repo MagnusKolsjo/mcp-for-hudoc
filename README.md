@@ -66,6 +66,24 @@ Lägg till i din MCP-klients konfiguration:
 }
 ```
 
+
+## Svarsstorlek och trunkering
+
+MCP-protokollet har en övre storleksgräns per svar. Det största cachade avgörandet är **358 097 tecken**.
+`echr_hamta_dom` tar därför två parametrar:
+
+| Parameter | Innebörd |
+|---|---|
+| `max_tecken` | Teckentak för texten. Standard 60 000 tecken; `0` ger hela texten som ett uttryckligt val. |
+| `fran_tecken` | Börja vid denna teckenposition — för att läsa vidare där ett kapat svar slutade. |
+
+Ett kapat svar säger alltid ifrån med fälten `trunkerad`, `tecken_totalt` och `fortsatt_fran_tecken`. Kapningen sker på ordgräns, aldrig mitt i
+ett ord.
+
+**Vid ordagranna citat:** citera aldrig ur ett svar som är markerat som kapat.
+Läs vidare med `fran_tecken` tills hela passagen är hämtad. Standardvärdet kan
+sättas i `.env` med `ECHR_MAX_TECKEN`.
+
 ## Licens
 
 AGPLv3 — se LICENSE. HUDOC-innehållet tillhör Europarådet och Europadomstolen.
