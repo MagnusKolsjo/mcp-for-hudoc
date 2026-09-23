@@ -15,7 +15,8 @@ Europakonventionen är grundlagsskyddad i Sverige (RF 2:19) och Europadomstolens
 
 ## Datakälla
 
-HUDOC är Europadomstolens officiella databas. Åtkomsten är öppen — ingen autentisering krävs.
+HUDOC är Europadomstolens officiella databas. Ingen autentisering krävs, men se
+[Botskydd](#botskydd-och-lokal-reserv) nedan.
 
 - Portal: https://hudoc.echr.coe.int/
 - ~230 000 dokument (domar, beslut, kommunicerade mål m.m.)
@@ -24,6 +25,7 @@ HUDOC är Europadomstolens officiella databas. Åtkomsten är öppen — ingen a
 ## Krav
 
 - Python 3.11+
+- MCP Python SDK 2.x (`mcp>=2.0,<3`)
 - PostgreSQL eller SQLite (välj efter behov)
 - Nätverksåtkomst till hudoc.echr.coe.int
 
@@ -35,7 +37,7 @@ cd mcp-for-hudoc
 
 python3 -m venv .venv --without-pip
 .venv/bin/python3 -m ensurepip
-.venv/bin/python3 -m pip install requests beautifulsoup4 psycopg2-binary python-dotenv "mcp[cli]"
+.venv/bin/python3 -m pip install -r requirements.txt
 
 cp config.example.env .env
 # Redigera .env med din DATABASE_URL
@@ -66,6 +68,50 @@ Lägg till i din MCP-klients konfiguration:
 }
 ```
 
+
+## HTTP-transport
+
+Standard är stdio: MCP-klienten startar processen själv. För delad drift bakom
+en reverse proxy kan servern i stället lyssna på HTTP (Streamable HTTP):
+
+```bash
+MCP_TRANSPORT=http MCP_API_KEY=<nyckel> .venv/bin/python3 mcp_server.py
+```
+
+Servern lyssnar då på `http://MCP_HOST:MCP_PORT/mcp` (standard `127.0.0.1:8011`)
+och kräver `Authorization: Bearer <MCP_API_KEY>` på varje anrop: 401 utan
+header, 403 med fel nyckel. Utan `MCP_API_KEY` startar servern inte i
+http-läget (exitkod 2).
+
+## Botskydd och lokal reserv
+
+HUDOC ligger bakom Cloudflare och kan svara med en botkontroll ("Just a
+moment…", HTTP 403 med `cf-mitigated: challenge`) i stället för data. Det är
+källans val att stoppa automatiserade anrop, och servern försöker inte ta sig
+förbi kontrollen.
+
+När det händer:
+
+- Verktygen svarar med ett fel (`isError`) som säger att HUDOC blockerar
+  automatiserade anrop, att det inte är ett fel i frågan, och att sökningen
+  kan göras direkt på https://hudoc.echr.coe.int.
+- Servern avstår från nya anrop till HUDOC under
+  `HUDOC_BOTSKYDD_PAUS_MINUTER` (standard 10), eftersom upprepade försök bara
+  förlänger blockeringen.
+- **Lokala metadata används som reserv** där de räcker för ett komplett svar:
+  sökningar utan fritext och samling på svenska mål (`respondent=SWE`, även
+  via `echr_hamta_svenska_mal`) eller på `importance=1`, samt ECLI-uppslag.
+  Svaret har då `kalla`/`metadata_kalla` = `lokal_cache`, `synkdatum` och en
+  `anmarkning` om att svaret kommer ur lokal cache och att fulltext inte kan
+  hämtas från HUDOC just nu.
+- Fulltext som redan ligger i den lokala fulltextcachen levereras som vanligt.
+- Synkskriptet avbryts vid första botkontrollen och flyttar inte fram sin
+  checkpoint, så att nästa körning tar igen det som missades.
+
+User-Agent i alla anrop, från både servern och synkskriptet, sätts med
+`HUDOC_USER_AGENT` i `.env`. Standard är projektets egen identifierare med
+länk till repot; en egen installation bör gärna ange en egen identifierare
+med kontaktadress.
 
 ## Svarsstorlek och trunkering
 

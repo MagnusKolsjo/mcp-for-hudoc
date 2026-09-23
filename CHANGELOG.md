@@ -3,6 +3,58 @@
 Alla viktiga ändringar dokumenteras här. Formatet följer [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 och versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Ändrat
+
+- **Brytande:** kräver MCP Python SDK 2.x (`mcp>=2.0,<3`). Servern bygger på
+  `MCPServer`, och transporten startas via `mcp_transport.starta()`.
+- **Brytande:** http-läget kräver `MCP_API_KEY` och startar inte utan den
+  (exitkod 2). Tidigare startade servern utan autentisering om nyckeln
+  saknades. Fel nyckel ger nu 403 i stället för 401.
+- **Brytande:** förväntade fel (botskydd, HTTP-fel, okänt itemid eller ECLI)
+  kastas som verktygsfel (`isError`) med svenskt meddelande i stället för att
+  returneras som `{"fel": ...}`.
+- **Brytande:** `echr_hitta_via_ecli` har inte längre fältet `fel`. Kan
+  fulltexten inte hämtas returneras metadata ändå, med skälet i det nya fältet
+  `anmarkning`.
+- Alla anrop mot HUDOC går över HTTPS. Sökningen gick tidigare över HTTP.
+- HTTP-sessionen skapas på ett ställe (`hudoc_query.skapa_session()`) och
+  delas av servern och synkskriptet.
+- Alla verktyg har titel, annotationer och typade svar (`outputSchema` och
+  `structuredContent`). Sökverktygen bär fältet `kalla`
+  (`hudoc` eller `lokal_cache`), `echr_hitta_via_ecli` fältet `metadata_kalla`.
+
+### Tillagt
+
+- `HUDOC_USER_AGENT`: User-Agent för alla anrop mot HUDOC, med projektets egen
+  identifierare som standard.
+- Igenkänning av Cloudflares botkontroll hos HUDOC (HTTP 403/503 med
+  `cf-mitigated` eller utmaningssidan). Verktygen svarar med ett begripligt
+  fel, och servern avstår från nya anrop under `HUDOC_BOTSKYDD_PAUS_MINUTER`
+  (standard 10).
+- Lokala metadata som reserv när HUDOC inte svarar: sökning utan fritext på
+  `respondent=SWE` eller `importance=1`, samt ECLI-uppslag. Svaret säger att
+  det kommer ur lokal cache och anger synkdatum.
+- `echr_hitta_via_ecli` bär `tecken_totalt`, `trunkerad` och
+  `fortsatt_fran_tecken`, så att en kapad fulltext inte ser komplett ut.
+
+### Rättat
+
+- Synkskriptet flyttade fram `senaste_synk_datum` även när alla hämtningar
+  misslyckats, och räknade rader som sparade även när databasen avvisat dem.
+  Checkpointen flyttas nu bara fram när alla filter hämtats och alla rader
+  sparats, och skriptet avslutar med kod 1 vid fel.
+- Omdirigeringen av fil-deskriptor 1 under HTTP-anrop är borttagen. Med
+  verktyg på arbetstrådar kunde den skicka andra anrops protokollsvar till
+  loggfilen.
+
+### Borttaget
+
+- Den egna Starlette-appen med Bearer-middleware (ersatt av `mcp_transport.py`).
+
+---
+
 ## [2.1.0] — 2026-08-10
 
 ### Tillagt
