@@ -108,7 +108,31 @@ class HastighetsgransFel(BotskyddFel):
 # Tecken på Cloudflares utmaningssida när cf-mitigated-headern saknas.
 _UTMANINGSMARKORER = ("just a moment", "challenge-platform", "cf-chl", "cf_chl_opt")
 
-_BOTSKYDD_PAUS_SEKUNDER = max(0.0, float(os.getenv("HUDOC_BOTSKYDD_PAUS_MINUTER", "10")) * 60)
+_STANDARD_PAUS_MINUTER = 10.0
+
+
+def _las_paus_sekunder() -> float:
+    """Läser HUDOC_BOTSKYDD_PAUS_MINUTER; ett ogiltigt värde ger standard och varning.
+
+    Ett skrivfel i .env ska inte hindra servern från att starta.
+    """
+    ravarde = os.getenv("HUDOC_BOTSKYDD_PAUS_MINUTER", "").strip()
+    if not ravarde:
+        return _STANDARD_PAUS_MINUTER * 60
+    try:
+        minuter = float(ravarde)
+        if minuter < 0 or minuter != minuter or minuter == float("inf"):
+            raise ValueError(ravarde)
+    except ValueError:
+        log.warning(
+            "Ogiltigt värde för HUDOC_BOTSKYDD_PAUS_MINUTER (%r); använder %g minuter.",
+            ravarde, _STANDARD_PAUS_MINUTER,
+        )
+        return _STANDARD_PAUS_MINUTER * 60
+    return minuter * 60
+
+
+_BOTSKYDD_PAUS_SEKUNDER = _las_paus_sekunder()
 
 # Övre gräns för en paus som källan begär via Retry-After. Ett orimligt
 # värde ska inte kunna stänga av servern i dagar.

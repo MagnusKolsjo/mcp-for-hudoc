@@ -16,6 +16,7 @@ Transport styrs via MCP_TRANSPORT i .env: stdio (standard) eller http.
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -281,6 +282,7 @@ def _bygg_query(
     """
     extra: list[str] = []
 
+    soktermer = [t for t in (_rensa_sokterm(t) for t in soktermer) if t]
     if soktermer:
         # Bygg OR-block: flervordiga fraser citeras, enkla ord lämnas nakna.
         or_delar = [f'"{t}"' if " " in t else t for t in soktermer]
@@ -312,6 +314,54 @@ def _bygg_query(
         # OBS: Lägg INTE extra parenteser runt bas-queryn — XRANK-syntaxen bryts då.
         return f"{_HUDOC_BAS_QUERY} AND ({' AND '.join(extra)})"
     return _HUDOC_BAS_QUERY
+
+
+# Värden som sätts in i HUDOC:s frågespråk. Det saknar escape-mekanism, så
+# fälten valideras mot sitt kända format i stället: ett citattecken eller en
+# parentes i ett filtervärde skulle annars ändra frågans struktur.
+_RE_RESPONDENT = re.compile(r"^[A-Z]{3}$")
+_RE_SAMLING    = re.compile(r"^[A-Z0-9_]{2,40}$")
+_RE_ECLI       = re.compile(r"^ECLI:CE:ECHR:\d{4}:[0-9A-Z.]{1,40}$")
+_RE_ITEMID     = re.compile(r"^\d{3}-\d{1,12}(-\d{1,12})?$")
+
+
+def _validera_respondent(respondent: str | None) -> str | None:
+    if not respondent:
+        return None
+    varde = respondent.strip().upper()
+    if not _RE_RESPONDENT.match(varde):
+        raise ToolError(
+            f"Ogiltig respondent {respondent!r}. Ange svarandestaten som "
+            "trebokstavskod enligt ISO 3166-1 alpha-3, t.ex. SWE, DEU eller FRA."
+        )
+    return varde
+
+
+def _validera_samling(samling: str | None) -> str | None:
+    if not samling:
+        return None
+    varde = samling.strip().upper()
+    if not _RE_SAMLING.match(varde):
+        raise ToolError(
+            f"Ogiltig samling {samling!r}. Exempel på giltiga värden: GRANDCHAMBER, "
+            "CHAMBER, JUDGMENTS, DECISIONS, COMMUNICATEDCASES, CLIN."
+        )
+    return varde
+
+
+def _validera_ecli(ecli: str) -> str:
+    varde = (ecli or "").strip().upper()
+    if not _RE_ECLI.match(varde):
+        raise ToolError(
+            f"Ogiltigt ECLI {ecli!r}. ECHR:s ECLI har formatet "
+            "ECLI:CE:ECHR:ÅÅÅÅ:MMDDTYP######, t.ex. ECLI:CE:ECHR:1988:0324JUD001046583."
+        )
+    return varde
+
+
+def _rensa_sokterm(term: str) -> str:
+    """Tar bort tecken som bryter HUDOC:s frågesyntax ur en fritextterm."""
+    return re.sub(r'["()\\]', " ", term).strip()
 
 
 def _hudoc_sok_live(query: str, start: int = 0, antal: int = 20) -> dict:
@@ -425,7 +475,7 @@ def _spara_metadata_fran_hudoc(itemid: str) -> None:
     Metadata är ett tillägg till fulltexten; fel här loggas men stoppar inte
     svaret.
     """
-    if db.hamta_avgorande(itemid):
+    if db.hamta_avgorande(itemid) or not _RE_ITEMID.match(itemid):
         return
     try:
         svar = _hudoc_sok_live(f"{_HUDOC_BAS_QUERY} AND (itemid={itemid})", antal=1)
@@ -700,6 +750,8 @@ def echr_search(
       antal           Antal resultat att returnera (standard 20, max 50)
     """
     antal = min(antal, HUDOC_SOKRESULTAT_MAX)
+    respondent = _validera_respondent(respondent)
+    samling = _validera_samling(samling)
 
     # Bygg lista med alla söktermer (OR-logik).
     # Kommaseparerade termer i fritextsokning bevaras som fraser — ingen split på mellanslag.
@@ -831,6 +883,7 @@ def echr_hitta_via_ecli(ecli: str) -> EcliSvar:
     (appno) är vanligare och kan sökas med echr_search.
     """
     log.info("echr_hitta_via_ecli: ecli=%s", ecli)
+    ecli = _validera_ecli(ecli)
 
     # Sök upp itemid via ECLI
     try:
