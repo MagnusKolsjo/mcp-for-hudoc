@@ -14,37 +14,35 @@ Datakälla: HUDOC — Europadomstolens för mänskliga rättigheters officiella 
 Transport styrs via MCP_TRANSPORT i .env: stdio (standard) eller http.
 """
 
-from __future__ import annotations
-
-import contextlib
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
-# VIKTIGT: load_dotenv() MÅSTE köras FÖRE "import db"
-load_dotenv()
+_SCRIPT_DIR = Path(__file__).parent.resolve()
+
+# VIKTIGT: load_dotenv() MÅSTE köras FÖRE "import db" och "import hudoc_query",
+# som läser sin konfiguration ur miljön.
+load_dotenv(_SCRIPT_DIR / ".env")
 
 import requests
 from bs4 import BeautifulSoup
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from typing_extensions import TypedDict
 
 import db
 import hudoc_query
-from hudoc_query import _HUDOC_BAS_QUERY
+from hudoc_query import _HUDOC_BAS_QUERY, BotskyddFel
+from mcp_annotationer import CACHE_HINTAR, LASNING_EXTERN
+from mcp_transport import starta
 
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-_SCRIPT_DIR = Path(__file__).parent.resolve()
-
-MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
-MCP_HOST      = os.getenv("MCP_HOST", "127.0.0.1")
-MCP_PORT      = int(os.getenv("MCP_PORT", "8011"))
-MCP_API_KEY   = os.getenv("MCP_API_KEY", "")
+SERVER_VERSION = "2.1.0"
 
 HUDOC_TIMEOUT         = int(os.getenv("HUDOC_TIMEOUT", "30"))
 HUDOC_SOKRESULTAT_MAX = int(os.getenv("HUDOC_SOKRESULTAT_MAX", "50"))
@@ -115,10 +113,88 @@ def _skar_ut(text, max_tecken: int, fran_tecken: int = 0) -> dict:
     }
 
 # ---------------------------------------------------------------------------
+# Svarstyper
+#
+# Svaren valideras mot typerna. Fält som kan saknas i HUDOC:s data (äldre
+# avgöranden saknar ofta ECLI, domsdatum eller slutsats) är därför `| None`.
+# ---------------------------------------------------------------------------
+
+class Traff(TypedDict):
+    """Metadata för ett avgörande."""
+    itemid: str | None
+    appno: str | None
+    datum: str | None
+    publiceringsdatum: str | None
+    respondent: str | None
+    ecli: str | None
+    samling: str | None
+    importance: str | None
+    artikel: str | None
+    slutsats: str | None
+    sprak: str | None
+
+
+class Sokresultat(TypedDict):
+    """Svar från echr_search och echr_hamta_svenska_mal."""
+    kalla: str
+    totalt_antal: int
+    start: int
+    antal_returnerade: int
+    nasta_start: int | None
+    expansion: list[str] | None
+    resultat: list[Traff]
+
+
+class Domtext(TypedDict):
+    """Svar från echr_hamta_dom."""
+    itemid: str
+    kalla: str
+    sprak: str | None
+    antal_tecken: int
+    fulltext: str
+    tecken_totalt: int
+    trunkerad: bool
+    fortsatt_fran_tecken: int | None
+
+
+class EcliSvar(TypedDict):
+    """Svar från echr_hitta_via_ecli.
+
+    Fulltextfälten är None när texten inte kunde hämtas; `anmarkning` säger
+    då varför.
+    """
+    metadata: Traff
+    fulltext: str | None
+    antal_tecken: int | None
+    kalla: str | None
+    tecken_totalt: int | None
+    trunkerad: bool | None
+    fortsatt_fran_tecken: int | None
+    anmarkning: str | None
+
+# ---------------------------------------------------------------------------
 # MCP-server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("echr-hudoc")
+mcp = MCPServer(
+    "echr-hudoc",
+    instructions=(
+        "MCP-server för Europadomstolens (ECHR) avgöranden via HUDOC. "
+        "Verktygen har prefixet echr_. ARBETSORDNING: echr_search eller "
+        "echr_hamta_svenska_mal ger metadata med itemid; echr_hamta_dom hämtar "
+        "fulltexten för ett itemid. Har du ett ECLI, använd echr_hitta_via_ecli. "
+        "FILTER: ar_fran/ar_till filtrerar på publiceringsdatum i HUDOC (kpdate), "
+        "inte på domsdatum. TRUNKERING: echr_hamta_dom kapar vid max_tecken "
+        "(standard 60 000); ett kapat svar bär trunkerad, tecken_totalt och "
+        "fortsatt_fran_tecken. Citera aldrig ordagrant ur ett kapat svar utan att "
+        "läsa vidare med fran_tecken. BOTSKYDD: HUDOC kan blockera automatiserade "
+        "anrop med Cloudflares botkontroll. Verktygen svarar då med ett fel som "
+        "säger det; det är inte ett fel i frågan. Hänvisa användaren till "
+        "https://hudoc.echr.coe.int i stället för att försöka igen direkt."
+    ),
+    version=SERVER_VERSION,
+    cache_hints=CACHE_HINTAR,
+)
 
 # ---------------------------------------------------------------------------
 # HUDOC-hjälpfunktioner
@@ -174,12 +250,12 @@ def expandera_fraga(query: str) -> list[str]:
 
 def _bygg_query(
     soktermer: list[str],
-    respondent: Optional[str] = None,
-    artikel: Optional[int] = None,
-    importance: Optional[int] = None,
-    ar_fran: Optional[int] = None,
-    ar_till: Optional[int] = None,
-    samling: Optional[str] = None,
+    respondent: str | None = None,
+    artikel: int | None = None,
+    importance: int | None = None,
+    ar_fran: int | None = None,
+    ar_till: int | None = None,
+    samling: str | None = None,
 ) -> str:
     """Bygger den fullständiga HUDOC-query-strängen med obligatorisk bas + extra filter.
 
@@ -225,8 +301,25 @@ def _bygg_query(
 
 
 def _hudoc_sok_live(query: str, start: int = 0, antal: int = 20) -> dict:
-    """Kör en sökning live mot HUDOC med processens delade session."""
+    """Kör en sökning live mot HUDOC med processens delade session.
+
+    Kastar BotskyddFel vid botkontroll och requests-undantag vid övriga fel.
+    """
     return hudoc_query.sok(_SESSION, query, start=start, antal=antal, timeout=HUDOC_TIMEOUT)
+
+
+def _hudoc_fel(fel: requests.RequestException) -> ToolError:
+    """Översätter ett nätverks- eller HTTP-fel från HUDOC till ett ToolError."""
+    if isinstance(fel, requests.HTTPError) and fel.response is not None:
+        return ToolError(
+            f"HUDOC svarade med HTTP {fel.response.status_code}. Felet ligger hos "
+            "källan, inte i frågan. Försök igen senare, eller sök direkt på "
+            "https://hudoc.echr.coe.int."
+        )
+    return ToolError(
+        f"HUDOC gick inte att nå ({type(fel).__name__}). Försök igen senare, "
+        "eller sök direkt på https://hudoc.echr.coe.int."
+    )
 
 
 def _iso_datum(s: str | None) -> str | None:
@@ -242,7 +335,7 @@ def _iso_datum(s: str | None) -> str | None:
     return s.strip() or None
 
 
-def _formattera_sokresultat(hudoc_rader: list[dict]) -> list[dict]:
+def _formattera_sokresultat(hudoc_rader: list[dict]) -> list[Traff]:
     """Konverterar HUDOC-rådata till ett rent svarsformat.
 
     datum           = domsdatum (judgementdate) på ISO-format YYYY-MM-DD
@@ -250,7 +343,7 @@ def _formattera_sokresultat(hudoc_rader: list[dict]) -> list[dict]:
     OBS: ar_fran/ar_till i sökverktygen filtrerar på publiceringsdatum (kpdate),
     inte på domsdatum.
     """
-    resultat = []
+    resultat: list[Traff] = []
     for rad in hudoc_rader:
         kol = rad.get("columns", {})
         resultat.append({
@@ -269,30 +362,6 @@ def _formattera_sokresultat(hudoc_rader: list[dict]) -> list[dict]:
     return resultat
 
 
-@contextlib.contextmanager
-def _tysta_fd1():
-    """OS-nivå omdirigering av FD 1 till loggfil under HTML-hämtning.
-
-    Skyddar MCP-protokollets stdout från C-biblioteks diagnostikutskrifter.
-    Etablerat mönster för PDF-extraktion med C-bindningar.
-    """
-    log_path = _SCRIPT_DIR / "logs" / "subprocess.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    save_out = os.dup(1)
-    save_err = os.dup(2)
-    log_fd = os.open(str(log_path), os.O_WRONLY | os.O_APPEND | os.O_CREAT)
-    try:
-        os.dup2(log_fd, 1)
-        os.dup2(log_fd, 2)
-        yield
-    finally:
-        os.dup2(save_out, 1)
-        os.dup2(save_err, 2)
-        os.close(save_out)
-        os.close(save_err)
-        os.close(log_fd)
-
-
 # Språkprioriteringsordning för fulltexthämtning.
 # De flesta ECHR-domar finns på engelska och/eller franska — sällan på svenska.
 # Prioritetsordningen: SV → EN → FR → DE → ES → IT → tillgängligt språk (None).
@@ -307,20 +376,20 @@ def _hamta_fulltext_fran_hudoc(itemid: str) -> tuple[str, str]:
     Returnerar tuple (text, sprak_kod) där sprak_kod är det faktiska språket
     som användes, t.ex. "ENG" eller "FRE".
 
-    Höjer requests.HTTPError vid nätverksfel.
+    Kastar BotskyddFel vid botkontroll, requests.HTTPError vid övriga
+    HTTP-fel och ValueError om ingen text finns på något språk.
     """
     for sprak in _SPRAK_PRIORITET:
         params: dict = {"library": "ECHR", "id": itemid}
         if sprak is not None:
             params["language"] = sprak
 
-        with _tysta_fd1():
-            svar = hudoc_query.hamta(
-                _SESSION,
-                hudoc_query.FULLTEXT_URL,
-                params=params,
-                timeout=HUDOC_TIMEOUT,
-            )
+        svar = hudoc_query.hamta(
+            _SESSION,
+            hudoc_query.FULLTEXT_URL,
+            params=params,
+            timeout=HUDOC_TIMEOUT,
+        )
 
         if svar.status_code == 404:
             # Detta språk finns inte — prova nästa
@@ -328,11 +397,8 @@ def _hamta_fulltext_fran_hudoc(itemid: str) -> tuple[str, str]:
             continue
 
         svar.raise_for_status()
-        html = svar.text
-
-        with _tysta_fd1():
-            soup = BeautifulSoup(html, "html.parser")
-            text = soup.get_text(separator="\n", strip=True)
+        soup = BeautifulSoup(svar.text, "html.parser")
+        text = soup.get_text(separator="\n", strip=True)
 
         if text.strip():
             anvant_sprak = sprak if sprak is not None else "okänt"
@@ -345,22 +411,107 @@ def _hamta_fulltext_fran_hudoc(itemid: str) -> tuple[str, str]:
     raise ValueError(f"Ingen fulltext hittades för itemid={itemid!r} på något språk.")
 
 
+def _spara_metadata_fran_hudoc(itemid: str) -> None:
+    """Hämtar och sparar metadata för ett avgörande som inte synkats än.
+
+    Metadata är ett tillägg till fulltexten; fel här loggas men stoppar inte
+    svaret.
+    """
+    if db.hamta_avgorande(itemid):
+        return
+    try:
+        svar = _hudoc_sok_live(f"{_HUDOC_BAS_QUERY} AND (itemid={itemid})", antal=1)
+        rader = svar.get("results", [])
+        if not rader:
+            return
+        kol = rader[0].get("columns", {})
+        db.spara_avgorande({
+            "itemid":            kol.get("itemid", itemid),
+            "appno":             kol.get("appno", ""),
+            "domsdatum":         _iso_datum(kol.get("judgementdate")),
+            "publiceringsdatum": _iso_datum(kol.get("kpdate")),
+            "svarandestat":      kol.get("respondent", ""),
+            "ecli":              kol.get("ecli", ""),
+            "samling":           kol.get("doctypebranch", ""),
+            "importance":        int(kol["importance"]) if kol.get("importance") else None,
+            "artikel":           kol.get("article", ""),
+            "slutsats":          kol.get("conclusion", ""),
+            "sprak":             kol.get("languageisocode", ""),
+            "typbeskrivning":    kol.get("typedescription", ""),
+        })
+    except Exception as e:
+        log.warning("Kunde inte spara metadata för %s: %s", itemid, e)
+
+
+def _hamta_dom(itemid: str, max_tecken: int, fran_tecken: int) -> Domtext:
+    """Gemensam kärna för echr_hamta_dom och echr_hitta_via_ecli.
+
+    Lokal cache först, sedan HUDOC. Kastar ToolError när texten inte kan
+    levereras.
+    """
+    cachad = db.hamta_fulltext_fran_cache(itemid)
+    if cachad:
+        log.info("echr_hamta_dom: serverar %s från cache", itemid)
+        # Hämta sprak från metadata-cachen för konsekvent svarstruktur
+        meta = db.hamta_avgorande(itemid)
+        # Cachen har alltid hela texten — trunkeringen gäller bara svaret.
+        u = _skar_ut(cachad, max_tecken, fran_tecken)
+        return {
+            "itemid":               itemid,
+            "kalla":                "cache",
+            "sprak":                (meta.get("sprak") or None) if meta else None,
+            "antal_tecken":         u["tecken_visade"],
+            "fulltext":             u["text"],
+            "tecken_totalt":        u["tecken_totalt"],
+            "trunkerad":            u["trunkerad"],
+            "fortsatt_fran_tecken": u["fortsatt_fran_tecken"],
+        }
+
+    try:
+        text, anvant_sprak = _hamta_fulltext_fran_hudoc(itemid)
+    except BotskyddFel as e:
+        raise ToolError(f"{e} Avgörandet {itemid} finns inte i den lokala fulltextcachen.") from e
+    except ValueError as e:
+        raise ToolError(
+            f"Ingen fulltext hittades för itemid {itemid!r} på något språk. "
+            "Kontrollera id:t med echr_search."
+        ) from e
+    except requests.RequestException as e:
+        log.error("echr_hamta_dom fel för %s: %s", itemid, e)
+        raise _hudoc_fel(e) from e
+
+    _spara_metadata_fran_hudoc(itemid)
+    db.spara_fulltext(itemid, text)
+
+    u = _skar_ut(text, max_tecken, fran_tecken)
+    return {
+        "itemid":               itemid,
+        "kalla":                "hudoc",
+        "sprak":                anvant_sprak,
+        "antal_tecken":         u["tecken_visade"],
+        "fulltext":             u["text"],
+        "tecken_totalt":        u["tecken_totalt"],
+        "trunkerad":            u["trunkerad"],
+        "fortsatt_fran_tecken": u["fortsatt_fran_tecken"],
+    }
+
+
 # ---------------------------------------------------------------------------
 # MCP-verktyg
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(title="Sök ECHR-avgöranden i HUDOC", annotations=LASNING_EXTERN)
 def echr_search(
-    fritextsokning: Optional[str] = None,
-    respondent: Optional[str] = None,
-    artikel: Optional[int] = None,
-    importance: Optional[int] = None,
-    ar_fran: Optional[int] = None,
-    ar_till: Optional[int] = None,
-    samling: Optional[str] = None,
+    fritextsokning: str | None = None,
+    respondent: str | None = None,
+    artikel: int | None = None,
+    importance: int | None = None,
+    ar_fran: int | None = None,
+    ar_till: int | None = None,
+    samling: str | None = None,
     start: int = 0,
     antal: int = 20,
-) -> dict:
+) -> Sokresultat:
     """Söker i HUDOC (Europadomstolens databas) med valfria filter.
 
     Returnerar metadata för matchande avgöranden — inte fulltext.
@@ -416,16 +567,17 @@ def echr_search(
 
     try:
         svar = _hudoc_sok_live(query, start=start, antal=antal)
-    except requests.HTTPError as e:
-        return {"fel": f"HUDOC svarade med HTTP-fel: {e}", "resultat": []}
-    except Exception as e:
+    except BotskyddFel as e:
+        raise ToolError(str(e)) from e
+    except requests.RequestException as e:
         log.error("echr_search fel: %s", e)
-        return {"fel": str(e), "resultat": []}
+        raise _hudoc_fel(e) from e
 
     rader = svar.get("results", [])
     totalt = svar.get("resultcount", 0)
 
     return {
+        "kalla": "hudoc",
         "totalt_antal": totalt,
         "start": start,
         "antal_returnerade": len(rader),
@@ -435,12 +587,12 @@ def echr_search(
     }
 
 
-@mcp.tool()
+@mcp.tool(title="Hämta fulltext för ett ECHR-avgörande", annotations=LASNING_EXTERN)
 def echr_hamta_dom(
     itemid: str,
     max_tecken: int = ECHR_MAX_TECKEN,
     fran_tecken: int = 0,
-) -> dict:
+) -> Domtext:
     """Hämtar fulltext för ett ECHR-avgörande via dess itemid.
 
     Fulltexten hämtas on-demand från HUDOC och cachas lokalt i databasen
@@ -453,99 +605,19 @@ def echr_hamta_dom(
     Tips: Använd echr_search eller echr_hamta_svenska_mal för att hitta itemid.
     """
     log.info("echr_hamta_dom: itemid=%s", itemid)
-
-    # Kontrollera lokal cache först
-    cachad = db.hamta_fulltext_fran_cache(itemid)
-    if cachad:
-        log.info("echr_hamta_dom: serverar från cache")
-        # Hämta sprak från metadata-cachen för konsekvent svarstruktur
-        meta = db.hamta_avgorande(itemid)
-        # Cachen har alltid hela texten — trunkeringen gäller bara svaret.
-        _u = _skar_ut(cachad, max_tecken, fran_tecken)
-        return {
-            "itemid":       itemid,
-            "kalla":        "cache",
-            "sprak":        meta.get("sprak") if meta else None,
-            "antal_tecken": _u["tecken_visade"],
-            "fulltext":     _u["text"],
-            "tecken_totalt":        _u["tecken_totalt"],
-            "trunkerad":            _u["trunkerad"],
-            "fortsatt_fran_tecken": _u["fortsatt_fran_tecken"],
-        }
-
-    # Hämta från HUDOC med språkfallback
-    try:
-        text, anvant_sprak = _hamta_fulltext_fran_hudoc(itemid)
-    except requests.HTTPError as e:
-        return {"fel": f"HUDOC svarade med HTTP-fel: {e}"}
-    except ValueError as e:
-        return {"fel": str(e)}
-    except Exception as e:
-        log.error("echr_hamta_dom fel för %s: %s", itemid, e)
-        return {"fel": str(e)}
-
-    # Säkerställ att metadata finns i avgorande_cache (om den inte synkats än)
-    if not db.hamta_avgorande(itemid):
-        try:
-            svar = _hudoc_sok_live(f"{_HUDOC_BAS_QUERY} AND (itemid={itemid})", antal=1)
-            rader = svar.get("results", [])
-            if rader:
-                from datetime import datetime
-                kol = rader[0].get("columns", {})
-
-                def _datum(s):
-                    if not s:
-                        return None
-                    for fmt in ("%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-                        try:
-                            return datetime.strptime(s.strip(), fmt).date().isoformat()
-                        except ValueError:
-                            continue
-                    return s.strip() or None
-
-                db.spara_avgorande({
-                    "itemid":            kol.get("itemid", itemid),
-                    "appno":             kol.get("appno", ""),
-                    "domsdatum":         _datum(kol.get("judgementdate")),
-                    "publiceringsdatum": _datum(kol.get("kpdate")),
-                    "svarandestat":      kol.get("respondent", ""),
-                    "ecli":              kol.get("ecli", ""),
-                    "samling":           kol.get("doctypebranch", ""),
-                    "importance":        int(kol["importance"]) if kol.get("importance") else None,
-                    "artikel":           kol.get("article", ""),
-                    "slutsats":          kol.get("conclusion", ""),
-                    "sprak":             kol.get("languageisocode", ""),
-                    "typbeskrivning":    kol.get("typedescription", ""),
-                })
-        except Exception as e:
-            log.warning("Kunde inte spara metadata för %s: %s", itemid, e)
-
-    # Cacha fulltexten
-    db.spara_fulltext(itemid, text)
-
-    _u = _skar_ut(text, max_tecken, fran_tecken)
-    return {
-        "itemid":       itemid,
-        "kalla":        "hudoc",
-        "sprak":        anvant_sprak,
-        "antal_tecken": _u["tecken_visade"],
-        "fulltext":     _u["text"],
-        "tecken_totalt":        _u["tecken_totalt"],
-        "trunkerad":            _u["trunkerad"],
-        "fortsatt_fran_tecken": _u["fortsatt_fran_tecken"],
-    }
+    return _hamta_dom(itemid, max_tecken, fran_tecken)
 
 
-@mcp.tool()
+@mcp.tool(title="Svenska mål i Europadomstolen", annotations=LASNING_EXTERN)
 def echr_hamta_svenska_mal(
-    ar_fran: Optional[int] = None,
-    ar_till: Optional[int] = None,
-    importance: Optional[int] = None,
-    artikel: Optional[int] = None,
-    samling: Optional[str] = None,
+    ar_fran: int | None = None,
+    ar_till: int | None = None,
+    importance: int | None = None,
+    artikel: int | None = None,
+    samling: str | None = None,
     start: int = 0,
     antal: int = 20,
-) -> dict:
+) -> Sokresultat:
     """Söker bland ECHR-avgöranden med Sverige som svarandestat (respondent=SWE).
 
     Bekvämlighetsverktyg för att snabbt hitta svenska mål utan att ange
@@ -572,8 +644,8 @@ def echr_hamta_svenska_mal(
     )
 
 
-@mcp.tool()
-def echr_hitta_via_ecli(ecli: str) -> dict:
+@mcp.tool(title="Slå upp ECHR-avgörande via ECLI", annotations=LASNING_EXTERN)
+def echr_hitta_via_ecli(ecli: str) -> EcliSvar:
     """Hämtar metadata och fulltext för ett ECHR-avgörande via ECLI.
 
     ECLI (European Case Law Identifier) för ECHR har formatet:
@@ -592,56 +664,48 @@ def echr_hitta_via_ecli(ecli: str) -> dict:
         query = f'{_HUDOC_BAS_QUERY} AND (ecli="{ecli}")'
         svar = _hudoc_sok_live(query, antal=1)
         rader = svar.get("results", [])
-    except Exception as e:
+    except BotskyddFel as e:
+        raise ToolError(str(e)) from e
+    except requests.RequestException as e:
         log.error("echr_hitta_via_ecli fel: %s", e)
-        return {"fel": str(e)}
+        raise _hudoc_fel(e) from e
 
     if not rader:
-        return {"fel": f"Inget avgörande hittades för ECLI: {ecli!r}"}
-
-    kol = rader[0].get("columns", {})
-    itemid = kol.get("itemid", "")
-    if not itemid:
-        return {"fel": "Avgörandet saknar itemid — kan inte hämta fulltext."}
+        raise ToolError(f"Inget avgörande hittades för ECLI {ecli!r}. Kontrollera formatet.")
 
     metadata = _formattera_sokresultat(rader)[0]
+    itemid = metadata["itemid"]
+    if not itemid:
+        raise ToolError(f"Avgörandet med ECLI {ecli!r} saknar itemid i HUDOC; fulltexten kan inte hämtas.")
 
-    # Hämta fulltext via echr_hamta_dom
-    fulltext_svar = echr_hamta_dom(itemid)
+    return _ecli_svar(metadata, itemid)
 
+
+def _ecli_svar(metadata: Traff, itemid: str) -> EcliSvar:
+    """Kompletterar metadata med fulltext. Ett fel på fulltexten blir en anmärkning."""
+    try:
+        dom = _hamta_dom(itemid, ECHR_MAX_TECKEN, 0)
+    except ToolError as e:
+        return {
+            "metadata": metadata,
+            "fulltext": None,
+            "antal_tecken": None,
+            "kalla": None,
+            "tecken_totalt": None,
+            "trunkerad": None,
+            "fortsatt_fran_tecken": None,
+            "anmarkning": f"Fulltexten kunde inte hämtas: {e}",
+        }
     return {
         "metadata": metadata,
-        "fulltext": fulltext_svar.get("fulltext"),
-        "antal_tecken": fulltext_svar.get("antal_tecken"),
-        "kalla": fulltext_svar.get("kalla"),
-        "fel": fulltext_svar.get("fel"),
+        "fulltext": dom["fulltext"],
+        "antal_tecken": dom["antal_tecken"],
+        "kalla": dom["kalla"],
+        "tecken_totalt": dom["tecken_totalt"],
+        "trunkerad": dom["trunkerad"],
+        "fortsatt_fran_tecken": dom["fortsatt_fran_tecken"],
+        "anmarkning": None,
     }
-
-
-# ---------------------------------------------------------------------------
-# HTTP-transport: Bearer-token-autentisering
-# ---------------------------------------------------------------------------
-
-def _skapa_http_app():
-    """Skapar en Starlette-app med Bearer-token-middleware för HTTP-läge."""
-    from starlette.applications import Starlette
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import JSONResponse
-
-    class BearerTokenMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            if MCP_API_KEY:
-                auth = request.headers.get("Authorization", "")
-                if auth != f"Bearer {MCP_API_KEY}":
-                    return JSONResponse(
-                        {"error": "Ogiltig eller saknad API-nyckel"},
-                        status_code=401,
-                    )
-            return await call_next(request)
-
-    app = mcp.streamable_http_app()
-    app.add_middleware(BearerTokenMiddleware)
-    return app
 
 
 # ---------------------------------------------------------------------------
@@ -649,16 +713,5 @@ def _skapa_http_app():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    log.info("Startar echr-hudoc MCP-server (transport=%s)", MCP_TRANSPORT)
-
-    # Initiera databas (fel loggas men stoppar inte servern)
-    db.initiera_schema()
-
-    if MCP_TRANSPORT == "http":
-        import uvicorn
-        app = _skapa_http_app()
-        log.info("HTTP-läge: lyssnar på %s:%d", MCP_HOST, MCP_PORT)
-        uvicorn.run(app, host=MCP_HOST, port=MCP_PORT)
-    else:
-        log.info("stdio-läge: startar")
-        mcp.run(transport="stdio")
+    log.info("Startar echr-hudoc MCP-server")
+    starta(mcp, standardport=8011, initiera=db.initiera_schema)
