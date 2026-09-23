@@ -19,18 +19,23 @@ Ingångspunkter:
     skapa_session() -> requests.Session
     hamta(session, url, **kwargs) -> requests.Response
     sok(session, query, start, antal, timeout) -> dict
+    iso_datum(varde) -> str | None
     BotskyddFel
     SOK_URL, FULLTEXT_URL, _HUDOC_BAS_QUERY, SELECT_FALT, RANKING_MODEL_ID
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 import urllib.parse
+from datetime import datetime
 
 import requests
+
+log = logging.getLogger(__name__)
 
 HUDOC_BAS_URL = "https://hudoc.echr.coe.int"
 SOK_URL       = f"{HUDOC_BAS_URL}/app/query/results"
@@ -152,6 +157,29 @@ def hamta(session: requests.Session, url: str, **kwargs) -> requests.Response:
             _blockerad_sedan = nu
         raise BotskyddFel(_meddelande(svar.status_code, nu))
     return svar
+
+
+_DATUMFORMAT = ("%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d")
+
+
+def iso_datum(varde) -> str | None:
+    """Tolkar ett HUDOC-datum (DD/MM/YYYY HH:MM:SS eller ISO) som YYYY-MM-DD.
+
+    Ett värde som inte går att tolka blir None och loggas. Att spara den råa
+    strängen vore sämre: Postgres DATE-kolumn avvisar då hela raden.
+    """
+    if varde is None:
+        return None
+    text = str(varde).strip()
+    if not text:
+        return None
+    for fmt in _DATUMFORMAT:
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    log.warning("Okänt datumformat från HUDOC, sparas som tomt: %r", text)
+    return None
 
 
 def skapa_session() -> requests.Session:

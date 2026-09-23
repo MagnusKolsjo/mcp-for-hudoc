@@ -336,17 +336,9 @@ def _hudoc_fel(fel: requests.RequestException) -> ToolError:
     )
 
 
-def _iso_datum(s: str | None) -> str | None:
-    """Parsar HUDOC-datumsträngar (DD/MM/YYYY HH:MM:SS eller ISO) till YYYY-MM-DD."""
-    from datetime import datetime
-    if not s:
-        return None
-    for fmt in ("%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s.strip(), fmt).date().isoformat()
-        except ValueError:
-            continue
-    return s.strip() or None
+def _iso_datum(s) -> str | None:
+    """HUDOC-datum som YYYY-MM-DD, eller None om det inte går att tolka."""
+    return hudoc_query.iso_datum(s)
 
 
 def _formattera_sokresultat(hudoc_rader: list[dict]) -> list[Traff]:

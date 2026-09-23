@@ -25,7 +25,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -138,18 +138,6 @@ def _konvertera_rad(hudoc_rad: dict) -> dict:
     """Konverterar ett HUDOC-resultatobjekt till DB-format."""
     kolumner = hudoc_rad.get("columns", {})
 
-    def _datum(s: str | None) -> str | None:
-        """Rensar HUDOC-datumformat till ISO-datum (YYYY-MM-DD)."""
-        if not s:
-            return None
-        # HUDOC returnerar ibland "01/01/1970 00:00:00" eller "1970-01-01"
-        for fmt in ("%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-            try:
-                return datetime.strptime(s.strip(), fmt).date().isoformat()
-            except ValueError:
-                continue
-        return s.strip() or None
-
     def _importance(s: str | None) -> int | None:
         try:
             return int(s) if s else None
@@ -159,8 +147,8 @@ def _konvertera_rad(hudoc_rad: dict) -> dict:
     return {
         "itemid":           kolumner.get("itemid", ""),
         "appno":            kolumner.get("appno", ""),
-        "domsdatum":        _datum(kolumner.get("judgementdate")),
-        "publiceringsdatum": _datum(kolumner.get("kpdate")),
+        "domsdatum":        hudoc_query.iso_datum(kolumner.get("judgementdate")),
+        "publiceringsdatum": hudoc_query.iso_datum(kolumner.get("kpdate")),
         "svarandestat":     kolumner.get("respondent", ""),
         "ecli":             kolumner.get("ecli", ""),
         "samling":          kolumner.get("doctypebranch", ""),
