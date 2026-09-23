@@ -9,7 +9,9 @@ Botskydd: HUDOC ligger bakom Cloudflare och kan svara med en botkontroll
 ("Just a moment…") i stället för data. Det är källans uttryckliga val att
 stoppa automatiserade anrop, och modulen försöker aldrig ta sig förbi det.
 Ett sådant svar blir BotskyddFel, och därefter avstår modulen från nya anrop
-under en paus, så att upprepade försök inte förlänger blockeringen.
+under en paus, så att upprepade försök inte förlänger blockeringen. Ett 429
+blir HastighetsgransFel (en underklass) med en paus enligt Retry-After, högst
+en timme.
 
 Miljövariabler (läses efter load_dotenv i anroparen):
     HUDOC_USER_AGENT            User-Agent i alla anrop (standard: projektets egen)
@@ -20,7 +22,7 @@ Ingångspunkter:
     hamta(session, url, **kwargs) -> requests.Response
     sok(session, query, start, antal, timeout) -> dict
     iso_datum(varde) -> str | None
-    BotskyddFel
+    BotskyddFel, HastighetsgransFel
     SOK_URL, FULLTEXT_URL, _HUDOC_BAS_QUERY, SELECT_FALT, RANKING_MODEL_ID
 """
 
@@ -85,11 +87,19 @@ SELECT_FALT = (
 
 
 class BotskyddFel(Exception):
-    """HUDOC svarade med Cloudflares botkontroll i stället för data.
+    """HUDOC stoppade anropet: Cloudflares botkontroll eller en hastighetsgräns.
 
     Skiljer blockeringen från vanliga HTTP-fel, så att verktygen kan förklara
-    läget i stället för att rapportera ett rått 403. Meddelandet är skrivet
-    för slutanvändaren och kan visas som det är.
+    läget i stället för att rapportera ett rått 403 eller 429. Meddelandet är
+    skrivet för slutanvändaren och kan visas som det är.
+    """
+
+
+class HastighetsgransFel(BotskyddFel):
+    """HUDOC svarade 429 Too Many Requests.
+
+    En underklass till BotskyddFel, så att allt som hanterar blockeringen
+    (ToolError, lokal reserv, avbruten synk) också hanterar hastighetsgränsen.
     """
 
 
@@ -98,10 +108,20 @@ _UTMANINGSMARKORER = ("just a moment", "challenge-platform", "cf-chl", "cf_chl_o
 
 _BOTSKYDD_PAUS_SEKUNDER = max(0.0, float(os.getenv("HUDOC_BOTSKYDD_PAUS_MINUTER", "10")) * 60)
 
-# Tidpunkt (time.time) då botkontrollen senast sågs, eller None. Delas mellan
+# Övre gräns för en paus som källan begär via Retry-After. Ett orimligt
+# värde ska inte kunna stänga av servern i dagar.
+_RETRY_AFTER_TAK_SEKUNDER = 3600.0
+
+# Pågående paus: sluttid (time.time), undantagsklass och meddelande, eller None. Delas mellan
 # arbetstrådar och skyddas därför av ett lås.
-_blockerad_sedan: float | None = None
-_blockerad_las = threading.Lock()
+_paus: tuple[float, type[BotskyddFel], str] | None = None
+_paus_las = threading.Lock()
+
+_HANVISNING = (
+    "Det är inte ett fel i frågan, och ett nytt försök direkt ändrar inget. "
+    "Sök eller läs avgörandet direkt på https://hudoc.echr.coe.int i en "
+    "webbläsare, eller försök igen senare."
+)
 
 
 def _ar_botskydd(svar: requests.Response) -> bool:
@@ -116,46 +136,80 @@ def _ar_botskydd(svar: requests.Response) -> bool:
     return False
 
 
-def _meddelande(status: int | None, sedan: float) -> str:
-    """Bygger felmeddelandet till användaren."""
-    klockslag = time.strftime("%H:%M", time.localtime(sedan))
-    orsak = (
-        f"HUDOC svarade med Cloudflares botkontroll (HTTP {status}) i stället för data"
-        if status is not None
-        else f"HUDOC svarade med Cloudflares botkontroll kl. {klockslag}, "
-             "och servern avstår från nya anrop en stund för att inte förlänga blockeringen"
-    )
-    return (
-        "HUDOC (Europadomstolens databas) blockerar just nu automatiserade anrop. "
-        f"{orsak}. Det är inte ett fel i frågan, och ett nytt försök direkt ändrar "
-        "inget. Sök eller läs avgörandet direkt på https://hudoc.echr.coe.int i en "
-        "webbläsare, eller försök igen senare."
-    )
+def _retry_after_sekunder(svar: requests.Response) -> float | None:
+    """Tolkar Retry-After (sekunder eller HTTP-datum), eller None."""
+    varde = svar.headers.get("retry-after", "").strip()
+    if not varde:
+        return None
+    try:
+        return max(0.0, float(varde))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        return max(0.0, parsedate_to_datetime(varde).timestamp() - time.time())
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _klockslag(tidpunkt: float) -> str:
+    return time.strftime("%H:%M", time.localtime(tidpunkt))
+
+
+def _satt_paus(sekunder: float, klass: type[BotskyddFel], meddelande_under_paus: str) -> None:
+    global _paus
+    with _paus_las:
+        _paus = (time.time() + sekunder, klass, meddelande_under_paus)
 
 
 def _kontrollera_paus() -> None:
-    """Kastar BotskyddFel utan nätverksanrop om pausen efter en blockering pågår."""
-    with _blockerad_las:
-        sedan = _blockerad_sedan
-    if sedan is not None and time.time() - sedan < _BOTSKYDD_PAUS_SEKUNDER:
-        raise BotskyddFel(_meddelande(None, sedan))
+    """Kastar samma slags fel som orsakade pausen, utan nätverksanrop."""
+    with _paus_las:
+        paus = _paus
+    if paus is not None and time.time() < paus[0]:
+        raise paus[1](paus[2])
 
 
 def hamta(session: requests.Session, url: str, **kwargs) -> requests.Response:
-    """GET mot HUDOC som känner igen botkontrollen.
+    """GET mot HUDOC som känner igen botkontroll och hastighetsgräns.
 
-    Kastar BotskyddFel om HUDOC svarar med en Cloudflare-utmaning, eller om
-    en sådan setts nyligen. Övriga svar returneras som de är; anroparen
-    hanterar statuskoder själv.
+    Kastar BotskyddFel vid Cloudflare-utmaning, HastighetsgransFel vid 429,
+    och BotskyddFel utan nätverksanrop medan en paus efter något av dem
+    pågår. Övriga svar returneras som de är; anroparen hanterar statuskoder
+    själv.
     """
-    global _blockerad_sedan
     _kontrollera_paus()
     svar = session.get(url, **kwargs)
+
+    if svar.status_code == 429:
+        begard = _retry_after_sekunder(svar)
+        sekunder = min(begard, _RETRY_AFTER_TAK_SEKUNDER) if begard is not None else _BOTSKYDD_PAUS_SEKUNDER
+        slut = time.time() + sekunder
+        orsak = (
+            "HUDOC (Europadomstolens databas) begränsar just nu antalet anrop "
+            "(HTTP 429 Too Many Requests)"
+        )
+        _satt_paus(sekunder, HastighetsgransFel, (
+            f"{orsak}, och servern väntar med nya anrop till kl. {_klockslag(slut)}. "
+            f"{_HANVISNING}"
+        ))
+        raise HastighetsgransFel(
+            f"{orsak}. Servern gör inga nya anrop före kl. {_klockslag(slut)}. {_HANVISNING}"
+        )
+
     if _ar_botskydd(svar):
         nu = time.time()
-        with _blockerad_las:
-            _blockerad_sedan = nu
-        raise BotskyddFel(_meddelande(svar.status_code, nu))
+        _satt_paus(_BOTSKYDD_PAUS_SEKUNDER, BotskyddFel, (
+            "HUDOC (Europadomstolens databas) blockerar just nu automatiserade anrop. "
+            f"HUDOC svarade med Cloudflares botkontroll kl. {_klockslag(nu)}, och servern "
+            "avstår från nya anrop en stund för att inte förlänga blockeringen. "
+            f"{_HANVISNING}"
+        ))
+        raise BotskyddFel(
+            "HUDOC (Europadomstolens databas) blockerar just nu automatiserade anrop. "
+            f"HUDOC svarade med Cloudflares botkontroll (HTTP {svar.status_code}) i "
+            f"stället för data. {_HANVISNING}"
+        )
     return svar
 
 

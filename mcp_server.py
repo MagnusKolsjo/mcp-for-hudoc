@@ -514,6 +514,8 @@ def _hamta_dom(itemid: str, max_tecken: int, fran_tecken: int) -> Domtext:
 
 def _orsak(fel: Exception) -> str:
     """Kort beskrivning av varför HUDOC inte kunde användas."""
+    if isinstance(fel, hudoc_query.HastighetsgransFel):
+        return "HUDOC begränsar just nu antalet anrop (HTTP 429)"
     if isinstance(fel, BotskyddFel):
         return "HUDOC blockerar just nu automatiserade anrop (Cloudflares botkontroll)"
     return "HUDOC gick inte att nå"
