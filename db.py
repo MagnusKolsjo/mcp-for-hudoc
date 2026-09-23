@@ -233,10 +233,14 @@ def initiera_schema():
 # Avgörande-cache
 # ---------------------------------------------------------------------------
 
-def spara_avgorande(rad: dict) -> None:
-    """Sparar eller uppdaterar ett avgörandes metadata i cachen."""
+def spara_avgorande(rad: dict) -> bool:
+    """Sparar eller uppdaterar ett avgörandes metadata i cachen.
+
+    Returnerar True om raden sparades. Fel loggas och ger False, så att
+    synken kan räkna misslyckade rader i stället för att tro att allt gick bra.
+    """
     if not DATABASE_URL:
-        return
+        return False
 
     ph = _ph()
 
@@ -305,8 +309,10 @@ def spara_avgorande(rad: dict) -> None:
                 ))
             conn.commit()
         conn.close()
+        return True
     except Exception as e:
         log.warning("Kunde inte spara avgörande %s: %s", rad.get("itemid"), e)
+        return False
 
 
 def hamta_avgorande(itemid: str) -> Optional[dict]:
@@ -479,10 +485,10 @@ def hamta_sync_varde(nyckel: str) -> Optional[str]:
         return None
 
 
-def spara_sync_varde(nyckel: str, varde: str) -> None:
-    """Sparar ett värde i sync_status."""
+def spara_sync_varde(nyckel: str, varde: str) -> bool:
+    """Sparar ett värde i sync_status. Returnerar True om det sparades."""
     if not DATABASE_URL:
-        return
+        return False
 
     tabell = _prefix("sync_status")
     ph = _ph()
@@ -501,5 +507,7 @@ def spara_sync_varde(nyckel: str, varde: str) -> None:
             cur.execute(sql, (nyckel, varde))
         conn.commit()
         conn.close()
+        return True
     except Exception as e:
         log.warning("Kunde inte spara sync_status[%s]: %s", nyckel, e)
+        return False

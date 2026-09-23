@@ -315,7 +315,8 @@ def _hamta_fulltext_fran_hudoc(itemid: str) -> tuple[str, str]:
             params["language"] = sprak
 
         with _tysta_fd1():
-            svar = _SESSION.get(
+            svar = hudoc_query.hamta(
+                _SESSION,
                 hudoc_query.FULLTEXT_URL,
                 params=params,
                 timeout=HUDOC_TIMEOUT,

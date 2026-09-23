@@ -168,8 +168,14 @@ def _konvertera_rad(hudoc_rad: dict) -> dict:
 # Huvudlogik
 # ---------------------------------------------------------------------------
 
-def synka(force_full: bool = False) -> None:
-    """Kör synkroniseringen."""
+def synka(force_full: bool = False) -> bool:
+    """Kör synkroniseringen. Returnerar True om allt hämtades och sparades.
+
+    Checkpointen (senaste_synk_datum) flyttas bara fram när varje filter
+    hämtats och varje rad sparats. Annars skulle nästa inkrementella körning
+    börja efter luckan, och avgöranden publicerade under ett avbrott skulle
+    aldrig hämtas.
+    """
     log.info("=== Startar ECHR-metadatasynk ===")
 
     db.initiera_schema()
@@ -187,7 +193,7 @@ def synka(force_full: bool = False) -> None:
 
     session = hudoc_query.skapa_session()
 
-    # Definiera de två sökkriterierna som extra AND-filter ovanpå bas-queryn
+    # Sökkriterierna läggs som extra AND-filter ovanpå bas-queryn
     fragor = [
         ("importance=1 (alla stater)",        "importance=1"),
         ("Case Reports / Key cases",          "doctypebranch=REPORTS"),
@@ -195,6 +201,8 @@ def synka(force_full: bool = False) -> None:
     ]
 
     totalt_sparade = 0
+    totalt_misslyckade = 0
+    hamtningsfel = False
 
     for beskrivning, extra_filter in fragor:
         log.info("--- %s ---", beskrivning)
@@ -202,24 +210,47 @@ def synka(force_full: bool = False) -> None:
             poster = _hamta_alla_sidor(
                 session, extra_filter, beskrivning, datum_fran=datum_fran
             )
+        except hudoc_query.BotskyddFel as e:
+            # Övriga filter skulle mötas av samma kontroll; fler anrop
+            # förlänger bara blockeringen.
+            log.error("Synken avbryts: %s", e)
+            hamtningsfel = True
+            break
         except Exception as e:
             log.error("Fel vid hämtning för '%s': %s", beskrivning, e)
+            hamtningsfel = True
             continue
 
+        sparade = 0
         for hudoc_rad in poster:
             rad = _konvertera_rad(hudoc_rad)
             if not rad["itemid"]:
                 continue
-            db.spara_avgorande(rad)
-            totalt_sparade += 1
+            if db.spara_avgorande(rad):
+                sparade += 1
+            else:
+                totalt_misslyckade += 1
+        totalt_sparade += sparade
 
-        log.info("Sparade %d poster för '%s'", len(poster), beskrivning)
+        log.info("Sparade %d av %d poster för '%s'", sparade, len(poster), beskrivning)
 
-    # Spara dagens datum som checkpoint
-    idag = date.today().isoformat()
-    db.spara_sync_varde("senaste_synk_datum", idag)
+    lyckad = not hamtningsfel and totalt_misslyckade == 0
+    if lyckad:
+        idag = date.today().isoformat()
+        if not db.spara_sync_varde("senaste_synk_datum", idag):
+            lyckad = False
+    else:
+        log.error(
+            "Checkpointen flyttas inte fram (hämtningsfel: %s, misslyckade rader: %d). "
+            "Nästa körning börjar om från %s.",
+            "ja" if hamtningsfel else "nej", totalt_misslyckade, datum_fran or "början",
+        )
 
-    log.info("=== Synk klar. Totalt sparade/uppdaterade: %d ===", totalt_sparade)
+    log.info(
+        "=== Synk klar. Sparade/uppdaterade: %d, misslyckade: %d ===",
+        totalt_sparade, totalt_misslyckade,
+    )
+    return lyckad
 
 
 # ---------------------------------------------------------------------------
@@ -341,4 +372,4 @@ if __name__ == "__main__":
         python_sokvag = os.getenv("PYTHON_SOKVAG", ".venv/bin/python3")
         installera_schema(__file__, python_sokvag)
     else:
-        synka(force_full=args.force_full)
+        sys.exit(0 if synka(force_full=args.force_full) else 1)
