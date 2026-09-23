@@ -119,6 +119,14 @@ def _hamta_alla_sidor(
         log.info("  Hämtat %d / %d", min(start, totalt), totalt)
         time.sleep(HUDOC_PAUS_SEKUNDER)
 
+    # En tom sida före resultcount betyder att HUDOC slutade leverera mitt i
+    # urvalet. Det räknas som fel, annars flyttas checkpointen fram förbi
+    # poster som aldrig hämtades.
+    if len(poster) < totalt:
+        raise RuntimeError(
+            f"Ofullständig hämtning för '{beskrivning}': {len(poster)} av {totalt} poster"
+        )
+
     return poster
 
 
