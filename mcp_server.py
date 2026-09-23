@@ -349,21 +349,23 @@ def _formattera_sokresultat(hudoc_rader: list[dict]) -> list[Traff]:
     OBS: ar_fran/ar_till i sökverktygen filtrerar på publiceringsdatum (kpdate),
     inte på domsdatum.
     """
+    t = hudoc_query.text_eller_none
     resultat: list[Traff] = []
-    for rad in hudoc_rader:
-        kol = rad.get("columns", {})
+    for rad in hudoc_rader or []:
+        kol = (rad or {}).get("columns") or {}
+        importance = hudoc_query.heltal_eller_none(kol.get("importance"))
         resultat.append({
-            "itemid":            kol.get("itemid", ""),
-            "appno":             kol.get("appno", ""),
+            "itemid":            t(kol.get("itemid")),
+            "appno":             t(kol.get("appno")),
             "datum":             _iso_datum(kol.get("judgementdate")),
             "publiceringsdatum": _iso_datum(kol.get("kpdate")),
-            "respondent":        kol.get("respondent", ""),
-            "ecli":              kol.get("ecli", ""),
-            "samling":           kol.get("doctypebranch", ""),
-            "importance":        kol.get("importance", ""),
-            "artikel":           kol.get("article", ""),
-            "slutsats":          kol.get("conclusion", ""),
-            "sprak":             kol.get("languageisocode", ""),
+            "respondent":        t(kol.get("respondent")),
+            "ecli":              t(kol.get("ecli")),
+            "samling":           t(kol.get("doctypebranch")),
+            "importance":        str(importance) if importance is not None else t(kol.get("importance")),
+            "artikel":           t(kol.get("article")),
+            "slutsats":          t(kol.get("conclusion")),
+            "sprak":             t(kol.get("languageisocode")),
         })
     return resultat
 
@@ -427,10 +429,10 @@ def _spara_metadata_fran_hudoc(itemid: str) -> None:
         return
     try:
         svar = _hudoc_sok_live(f"{_HUDOC_BAS_QUERY} AND (itemid={itemid})", antal=1)
-        rader = svar.get("results", [])
+        rader = svar.get("results") or []
         if not rader:
             return
-        kol = rader[0].get("columns", {})
+        kol = (rader[0] or {}).get("columns") or {}
         db.spara_avgorande({
             "itemid":            kol.get("itemid", itemid),
             "appno":             kol.get("appno", ""),
@@ -439,7 +441,7 @@ def _spara_metadata_fran_hudoc(itemid: str) -> None:
             "svarandestat":      kol.get("respondent", ""),
             "ecli":              kol.get("ecli", ""),
             "samling":           kol.get("doctypebranch", ""),
-            "importance":        int(kol["importance"]) if kol.get("importance") else None,
+            "importance":        hudoc_query.heltal_eller_none(kol.get("importance")),
             "artikel":           kol.get("article", ""),
             "slutsats":          kol.get("conclusion", ""),
             "sprak":             kol.get("languageisocode", ""),
@@ -528,19 +530,20 @@ def _datumtext(v) -> str | None:
 
 def _traff_fran_db(rad: dict) -> Traff:
     """Konverterar en rad ur avgorande_cache till samma form som HUDOC-träffar."""
-    importance = rad.get("importance")
+    t = hudoc_query.text_eller_none
+    importance = hudoc_query.heltal_eller_none(rad.get("importance"))
     return {
-        "itemid":            rad.get("itemid"),
-        "appno":             rad.get("appno"),
+        "itemid":            t(rad.get("itemid")),
+        "appno":             t(rad.get("appno")),
         "datum":             _datumtext(rad.get("domsdatum")),
         "publiceringsdatum": _datumtext(rad.get("publiceringsdatum")),
-        "respondent":        rad.get("svarandestat"),
-        "ecli":              rad.get("ecli"),
-        "samling":           rad.get("samling"),
+        "respondent":        t(rad.get("svarandestat")),
+        "ecli":              t(rad.get("ecli")),
+        "samling":           t(rad.get("samling")),
         "importance":        str(importance) if importance is not None else None,
-        "artikel":           rad.get("artikel"),
-        "slutsats":          rad.get("slutsats"),
-        "sprak":             rad.get("sprak"),
+        "artikel":           t(rad.get("artikel")),
+        "slutsats":          t(rad.get("slutsats")),
+        "sprak":             t(rad.get("sprak")),
     }
 
 
@@ -743,8 +746,8 @@ def echr_search(
             raise ToolError(f"{e}{tips}") from e
         raise ToolError(f"{_hudoc_fel(e)}{tips}") from e
 
-    rader = svar.get("results", [])
-    totalt = svar.get("resultcount", 0)
+    rader = svar.get("results") or []
+    totalt = hudoc_query.heltal_eller_none(svar.get("resultcount")) or 0
 
     return {
         "kalla": "hudoc",

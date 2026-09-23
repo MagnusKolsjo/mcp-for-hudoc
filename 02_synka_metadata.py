@@ -96,7 +96,7 @@ def _hamta_alla_sidor(
 
     # Första anropet för att ta reda på totalt antal
     forsta = _hudoc_sok(session, extra_filter, start=0, antal=1, datum_fran=datum_fran)
-    totalt = forsta.get("resultcount", 0)
+    totalt = hudoc_query.heltal_eller_none(forsta.get("resultcount")) or 0
     if totalt == 0:
         log.info("Inga poster att synka för: %s", beskrivning)
         return []
@@ -111,7 +111,7 @@ def _hamta_alla_sidor(
             start=start, antal=HUDOC_SOKRESULTAT_MAX,
             datum_fran=datum_fran,
         )
-        rader = batch.get("results", [])
+        rader = batch.get("results") or []
         if not rader:
             break
         poster.extend(rader)
@@ -136,27 +136,22 @@ def _hamta_alla_sidor(
 
 def _konvertera_rad(hudoc_rad: dict) -> dict:
     """Konverterar ett HUDOC-resultatobjekt till DB-format."""
-    kolumner = hudoc_rad.get("columns", {})
-
-    def _importance(s: str | None) -> int | None:
-        try:
-            return int(s) if s else None
-        except (ValueError, TypeError):
-            return None
+    kolumner = (hudoc_rad or {}).get("columns") or {}
+    t = hudoc_query.text_eller_none
 
     return {
-        "itemid":           kolumner.get("itemid", ""),
-        "appno":            kolumner.get("appno", ""),
+        "itemid":           t(kolumner.get("itemid")) or "",
+        "appno":            t(kolumner.get("appno")) or "",
         "domsdatum":        hudoc_query.iso_datum(kolumner.get("judgementdate")),
         "publiceringsdatum": hudoc_query.iso_datum(kolumner.get("kpdate")),
-        "svarandestat":     kolumner.get("respondent", ""),
-        "ecli":             kolumner.get("ecli", ""),
-        "samling":          kolumner.get("doctypebranch", ""),
-        "importance":       _importance(kolumner.get("importance")),
-        "artikel":          kolumner.get("article", ""),
-        "slutsats":         kolumner.get("conclusion", ""),
-        "sprak":            kolumner.get("languageisocode", ""),
-        "typbeskrivning":   kolumner.get("typedescription", ""),
+        "svarandestat":     t(kolumner.get("respondent")) or "",
+        "ecli":             t(kolumner.get("ecli")) or "",
+        "samling":          t(kolumner.get("doctypebranch")) or "",
+        "importance":       hudoc_query.heltal_eller_none(kolumner.get("importance")),
+        "artikel":          t(kolumner.get("article")) or "",
+        "slutsats":         t(kolumner.get("conclusion")) or "",
+        "sprak":            t(kolumner.get("languageisocode")) or "",
+        "typbeskrivning":   t(kolumner.get("typedescription")) or "",
     }
 
 

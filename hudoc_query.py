@@ -22,6 +22,8 @@ Ingångspunkter:
     hamta(session, url, **kwargs) -> requests.Response
     sok(session, query, start, antal, timeout) -> dict
     iso_datum(varde) -> str | None
+    text_eller_none(varde) -> str | None
+    heltal_eller_none(varde) -> int | None
     BotskyddFel, HastighetsgransFel
     SOK_URL, FULLTEXT_URL, _HUDOC_BAS_QUERY, SELECT_FALT, RANKING_MODEL_ID
 """
@@ -234,6 +236,38 @@ def iso_datum(varde) -> str | None:
             continue
     log.warning("Okänt datumformat från HUDOC, sparas som tomt: %r", text)
     return None
+
+
+def text_eller_none(varde) -> str | None:
+    """Normaliserar ett HUDOC-fält till text.
+
+    HUDOC:s JSON är inte dokumenterad, och samma fält kan komma som sträng,
+    tal eller lista. Tal blir text utan decimaler när de är heltal, listor
+    sammanfogas med semikolon (samma avgränsare som HUDOC:s egna listfält),
+    och tomma värden blir None.
+    """
+    if varde is None:
+        return None
+    if isinstance(varde, bool):
+        return str(varde).lower()
+    if isinstance(varde, float) and varde.is_integer():
+        varde = int(varde)
+    if isinstance(varde, (list, tuple)):
+        delar = [text_eller_none(v) for v in varde]
+        varde = ";".join(d for d in delar if d)
+    text = str(varde).strip()
+    return text or None
+
+
+def heltal_eller_none(varde) -> int | None:
+    """Tolkar ett HUDOC-fält som heltal ("1", 1, 1.0, "1.0"), annars None."""
+    if varde is None or isinstance(varde, bool):
+        return None
+    try:
+        tal = float(str(varde).strip())
+    except ValueError:
+        return None
+    return int(tal) if tal.is_integer() else None
 
 
 def skapa_session() -> requests.Session:
