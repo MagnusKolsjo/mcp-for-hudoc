@@ -25,7 +25,6 @@ import logging
 import os
 import sys
 import time
-import urllib.parse
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -35,7 +34,8 @@ load_dotenv()
 
 import requests
 import db
-from hudoc_query import _HUDOC_BAS_QUERY, SELECT_FALT, RANKING_MODEL_ID
+import hudoc_query
+from hudoc_query import _HUDOC_BAS_QUERY
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -64,17 +64,6 @@ HUDOC_PAUS_SEKUNDER   = 0.3          # Paus mellan anrop för att inte hammra AP
 # HUDOC-hjälpfunktioner
 # ---------------------------------------------------------------------------
 
-def _bygg_hudoc_session() -> requests.Session:
-    """Skapar en requests-session med rätt headers för HUDOC."""
-    s = requests.Session()
-    s.headers.update({
-        "User-Agent": "mcp-for-hudoc/1.0 (+https://github.com/MagnusKolsjo/mcp-for-hudoc)",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
-    return s
-
-
 def _hudoc_sok(
     session: requests.Session,
     extra_filter: str,
@@ -85,28 +74,16 @@ def _hudoc_sok(
     """Kör en sökning mot HUDOC och returnerar råa JSON-svaret.
 
     Använder HUDOC:s obligatoriska XRANK-basquery med ett extra AND-filter.
-    Kräver HTTP (ej HTTPS) och rankingModelId — utan dessa returneras 404.
     """
     # OBS: Lägg INTE extra parenteser runt bas-queryn — XRANK-syntaxen bryts då.
     # Filter läggs direkt till med AND i slutet av kedjan.
-    # sort ska vara tom sträng (som originalet) — inte "judgementdate Descending".
     query = _HUDOC_BAS_QUERY
     if extra_filter:
         query = f"{query} AND ({extra_filter})"
     if datum_fran:
         query = f"{query} AND (kpdate>=\"{datum_fran}\")"
 
-    url = (
-        "http://hudoc.echr.coe.int/app/query/results"
-        f"?query={urllib.parse.quote(query)}"
-        f"&select={SELECT_FALT}"
-        f"&rankingModelId={RANKING_MODEL_ID}"
-        f"&sort="
-        f"&start={start}&length={antal}"
-    )
-    svar = session.get(url, timeout=HUDOC_TIMEOUT)
-    svar.raise_for_status()
-    return svar.json()
+    return hudoc_query.sok(session, query, start=start, antal=antal, timeout=HUDOC_TIMEOUT)
 
 
 def _hamta_alla_sidor(
@@ -208,7 +185,7 @@ def synka(force_full: bool = False) -> None:
         else:
             log.info("Första synken — hämtar alla poster")
 
-    session = _bygg_hudoc_session()
+    session = hudoc_query.skapa_session()
 
     # Definiera de två sökkriterierna som extra AND-filter ovanpå bas-queryn
     fragor = [

@@ -19,7 +19,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import urllib.parse
 from pathlib import Path
 from typing import Optional
 
@@ -33,7 +32,8 @@ from bs4 import BeautifulSoup
 from mcp.server.fastmcp import FastMCP
 
 import db
-from hudoc_query import _HUDOC_BAS_QUERY, SELECT_FALT, RANKING_MODEL_ID
+import hudoc_query
+from hudoc_query import _HUDOC_BAS_QUERY
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -124,22 +124,9 @@ mcp = FastMCP("echr-hudoc")
 # HUDOC-hjälpfunktioner
 # ---------------------------------------------------------------------------
 
-_hudoc_session: Optional[requests.Session] = None
-
-
-def _hamta_session() -> requests.Session:
-    """Returnerar en requests-session med rätt HUDOC-headers (lazy, delad)."""
-    global _hudoc_session
-    if _hudoc_session is None:
-        s = requests.Session()
-        s.headers.update({
-            "User-Agent": "mcp-for-hudoc/1.0 (+https://github.com/MagnusKolsjo/mcp-for-hudoc)",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Accept-Language": "en-US,en;q=0.9",
-        })
-        _hudoc_session = s
-        log.info("HUDOC-session initierad")
-    return _hudoc_session
+# En session för hela processen. Den skapas vid import och delas mellan
+# verktygsanropen; headers ändras aldrig efter start.
+_SESSION = hudoc_query.skapa_session()
 
 
 def expandera_fraga(query: str) -> list[str]:
@@ -238,22 +225,8 @@ def _bygg_query(
 
 
 def _hudoc_sok_live(query: str, start: int = 0, antal: int = 20) -> dict:
-    """Kör en sökning live mot HUDOC.
-
-    Kräver HTTP (ej HTTPS) och rankingModelId — utan dessa returneras 404.
-    """
-    session = _hamta_session()
-    url = (
-        "http://hudoc.echr.coe.int/app/query/results"
-        f"?query={urllib.parse.quote(query)}"
-        f"&select={SELECT_FALT}"
-        f"&rankingModelId={RANKING_MODEL_ID}"
-        f"&sort="
-        f"&start={start}&length={antal}"
-    )
-    svar = session.get(url, timeout=HUDOC_TIMEOUT)
-    svar.raise_for_status()
-    return svar.json()
+    """Kör en sökning live mot HUDOC med processens delade session."""
+    return hudoc_query.sok(_SESSION, query, start=start, antal=antal, timeout=HUDOC_TIMEOUT)
 
 
 def _iso_datum(s: str | None) -> str | None:
@@ -336,16 +309,14 @@ def _hamta_fulltext_fran_hudoc(itemid: str) -> tuple[str, str]:
 
     Höjer requests.HTTPError vid nätverksfel.
     """
-    session = _hamta_session()
-
     for sprak in _SPRAK_PRIORITET:
         params: dict = {"library": "ECHR", "id": itemid}
         if sprak is not None:
             params["language"] = sprak
 
         with _tysta_fd1():
-            svar = session.get(
-                "https://hudoc.echr.coe.int/app/conversion/docx/html/body",
+            svar = _SESSION.get(
+                hudoc_query.FULLTEXT_URL,
                 params=params,
                 timeout=HUDOC_TIMEOUT,
             )
