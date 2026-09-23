@@ -407,6 +407,110 @@ def sok_avgoranden(
         return []
 
 
+def lista_lokala_avgoranden(
+    svarandestat: Optional[str] = None,
+    importance: Optional[int] = None,
+    publicerad_fran_ar: Optional[int] = None,
+    publicerad_till_ar: Optional[int] = None,
+) -> Optional[list[dict]]:
+    """Listar synkade avgöranden, nyast publicerade först.
+
+    Används när HUDOC inte svarar. Filtrerar på publiceringsdatum (kpdate),
+    samma fält som verktygens ar_fran/ar_till filtrerar på hos HUDOC.
+    Returnerar None om databasen inte är konfigurerad eller inte svarar, så
+    att anroparen kan skilja "inga träffar" från "inga data".
+    """
+    if not DATABASE_URL:
+        return None
+
+    tabell = _prefix("avgorande_cache")
+    ph = _ph()
+
+    villkor: list[str] = []
+    params: list = []
+    if svarandestat:
+        villkor.append(f"svarandestat = {ph}")
+        params.append(svarandestat.upper())
+    if importance is not None:
+        villkor.append(f"importance = {ph}")
+        params.append(importance)
+    # ISO-datum jämförs korrekt som text i båda backends.
+    if publicerad_fran_ar:
+        villkor.append(f"publiceringsdatum >= {ph}")
+        params.append(f"{publicerad_fran_ar}-01-01")
+    if publicerad_till_ar:
+        villkor.append(f"publiceringsdatum <= {ph}")
+        params.append(f"{publicerad_till_ar}-12-31")
+
+    where = ("WHERE " + " AND ".join(villkor)) if villkor else ""
+    nulls_last = "NULLS LAST" if _ar_postgres() else ""
+    sql = f"""
+        SELECT * FROM {tabell}
+        {where}
+        ORDER BY publiceringsdatum DESC {nulls_last}, itemid
+    """
+
+    try:
+        conn = _hamta_db()
+        with _cursor(conn) as cur:
+            cur.execute(sql, params)
+            rader = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rader]
+    except Exception as e:
+        log.warning("Databasfel vid lokal sökning: %s", e)
+        return None
+
+
+def hamta_avgoranden_via_ecli(ecli: str) -> Optional[list[dict]]:
+    """Returnerar synkade avgöranden med givet ECLI (ett per språkversion).
+
+    None om databasen inte är konfigurerad eller inte svarar.
+    """
+    if not DATABASE_URL:
+        return None
+
+    tabell = _prefix("avgorande_cache")
+    ph = _ph()
+
+    try:
+        conn = _hamta_db()
+        with _cursor(conn) as cur:
+            cur.execute(f"SELECT * FROM {tabell} WHERE ecli = {ph} ORDER BY itemid", (ecli,))
+            rader = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rader]
+    except Exception as e:
+        log.warning("Kunde inte slå upp ECLI %s: %s", ecli, e)
+        return None
+
+
+def lokal_synkstatus() -> dict:
+    """Hur färska de lokala metadata är.
+
+    synkdatum          senaste lyckade synk (sync_status), ISO-datum
+    senast_publicerad  senaste publiceringsdatum bland de synkade avgörandena
+    Värdena är None när de inte går att avgöra.
+    """
+    status: dict = {"synkdatum": hamta_sync_varde("senaste_synk_datum"), "senast_publicerad": None}
+    if not DATABASE_URL:
+        return status
+
+    tabell = _prefix("avgorande_cache")
+    try:
+        conn = _hamta_db()
+        with _cursor(conn) as cur:
+            cur.execute(f"SELECT MAX(publiceringsdatum) AS senast FROM {tabell}")
+            rad = cur.fetchone()
+        conn.close()
+        if rad:
+            varde = rad["senast"] if isinstance(rad, dict) else rad[0]
+            status["senast_publicerad"] = str(varde) if varde else None
+    except Exception as e:
+        log.warning("Kunde inte läsa lokal synkstatus: %s", e)
+    return status
+
+
 # ---------------------------------------------------------------------------
 # Fulltext-cache
 # ---------------------------------------------------------------------------

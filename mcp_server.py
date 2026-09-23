@@ -30,7 +30,7 @@ import requests
 from bs4 import BeautifulSoup
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 import db
 import hudoc_query
@@ -135,7 +135,11 @@ class Traff(TypedDict):
 
 
 class Sokresultat(TypedDict):
-    """Svar från echr_search och echr_hamta_svenska_mal."""
+    """Svar från echr_search och echr_hamta_svenska_mal.
+
+    kalla är "hudoc" eller "lokal_cache". Ett svar ur lokal cache bär också
+    synkdatum och en anmarkning om vad det innebär.
+    """
     kalla: str
     totalt_antal: int
     start: int
@@ -143,6 +147,8 @@ class Sokresultat(TypedDict):
     nasta_start: int | None
     expansion: list[str] | None
     resultat: list[Traff]
+    synkdatum: NotRequired[str | None]
+    anmarkning: NotRequired[str]
 
 
 class Domtext(TypedDict):
@@ -161,9 +167,11 @@ class EcliSvar(TypedDict):
     """Svar från echr_hitta_via_ecli.
 
     Fulltextfälten är None när texten inte kunde hämtas; `anmarkning` säger
-    då varför.
+    då varför. metadata_kalla är "hudoc" eller "lokal_cache"; ur lokal cache
+    bär svaret också synkdatum.
     """
     metadata: Traff
+    metadata_kalla: str
     fulltext: str | None
     antal_tecken: int | None
     kalla: str | None
@@ -171,6 +179,7 @@ class EcliSvar(TypedDict):
     trunkerad: bool | None
     fortsatt_fran_tecken: int | None
     anmarkning: str | None
+    synkdatum: NotRequired[str | None]
 
 # ---------------------------------------------------------------------------
 # MCP-server
@@ -190,7 +199,12 @@ mcp = MCPServer(
         "läsa vidare med fran_tecken. BOTSKYDD: HUDOC kan blockera automatiserade "
         "anrop med Cloudflares botkontroll. Verktygen svarar då med ett fel som "
         "säger det; det är inte ett fel i frågan. Hänvisa användaren till "
-        "https://hudoc.echr.coe.int i stället för att försöka igen direkt."
+        "https://hudoc.echr.coe.int i stället för att försöka igen direkt. "
+        "LOKAL RESERV: när HUDOC inte svarar besvaras sökningar utan fritext på "
+        "svenska mål (respondent=SWE) eller importance=1, och ECLI-uppslag, ur "
+        "lokalt synkade metadata. Sådana svar har kalla/metadata_kalla "
+        "'lokal_cache' och synkdatum; nämn det för användaren. Fulltext levereras "
+        "då bara för avgöranden som redan ligger i den lokala fulltextcachen."
     ),
     version=SERVER_VERSION,
     cache_hints=CACHE_HINTAR,
@@ -497,6 +511,158 @@ def _hamta_dom(itemid: str, max_tecken: int, fran_tecken: int) -> Domtext:
 
 
 # ---------------------------------------------------------------------------
+# Lokala metadata som reserv när HUDOC inte svarar
+#
+# Synken (02_synka_metadata.py) håller tre urval kompletta: alla avgöranden
+# mot Sverige, alla med importance=1 och alla Key cases. Bara frågor som
+# ryms helt i ett sådant urval besvaras lokalt; allt annat skulle ge ett
+# ofullständigt svar som ser komplett ut. Fritext kan inte besvaras lokalt,
+# eftersom titlar och fulltext inte synkas.
+# ---------------------------------------------------------------------------
+
+def _orsak(fel: Exception) -> str:
+    """Kort beskrivning av varför HUDOC inte kunde användas."""
+    if isinstance(fel, BotskyddFel):
+        return "HUDOC blockerar just nu automatiserade anrop (Cloudflares botkontroll)"
+    return "HUDOC gick inte att nå"
+
+
+def _datumtext(v) -> str | None:
+    """Datum från databasen (date eller ISO-text) som ISO-text."""
+    return str(v)[:10] if v else None
+
+
+def _traff_fran_db(rad: dict) -> Traff:
+    """Konverterar en rad ur avgorande_cache till samma form som HUDOC-träffar."""
+    importance = rad.get("importance")
+    return {
+        "itemid":            rad.get("itemid"),
+        "appno":             rad.get("appno"),
+        "datum":             _datumtext(rad.get("domsdatum")),
+        "publiceringsdatum": _datumtext(rad.get("publiceringsdatum")),
+        "respondent":        rad.get("svarandestat"),
+        "ecli":              rad.get("ecli"),
+        "samling":           rad.get("samling"),
+        "importance":        str(importance) if importance is not None else None,
+        "artikel":           rad.get("artikel"),
+        "slutsats":          rad.get("slutsats"),
+        "sprak":             rad.get("sprak"),
+    }
+
+
+def _har_artikel(artikelfalt: str | None, artikel: int) -> bool:
+    """Motsvarar HUDOC:s article=N: artikeln eller en punkt i den, t.ex. 8-1."""
+    if not artikelfalt:
+        return False
+    nr = str(artikel)
+    return any(t == nr or t.startswith(f"{nr}-") for t in artikelfalt.split(";"))
+
+
+def _lokal_anmarkning(orsak: str, status: dict) -> str:
+    """Anmärkningen som följer med varje svar ur lokal cache."""
+    synkdatum = status.get("synkdatum") or "okänt datum"
+    senast = status.get("senast_publicerad") or "okänt"
+    return (
+        f"{orsak}. Svaret kommer därför ur lokal cache: metadata synkade från "
+        f"HUDOC, senast {synkdatum} (senast publicerade avgörande i lokala data: "
+        f"{senast}). Nyare avgöranden kan saknas. Fulltext kan inte hämtas från "
+        "HUDOC just nu; echr_hamta_dom levererar bara avgöranden som redan finns "
+        "i den lokala fulltextcachen. Sök direkt på https://hudoc.echr.coe.int "
+        "för ett aktuellt svar."
+    )
+
+
+def _lokal_sokning(
+    fel: Exception,
+    fritext: str | None,
+    respondent: str | None,
+    artikel: int | None,
+    importance: int | None,
+    ar_fran: int | None,
+    ar_till: int | None,
+    samling: str | None,
+    start: int,
+    antal: int,
+) -> Sokresultat | None:
+    """Besvarar en sökning ur lokala metadata, eller None om det inte går."""
+    svarandestat = respondent.upper() if respondent else None
+    if fritext or samling:
+        return None
+    if svarandestat != "SWE" and importance != 1:
+        return None
+
+    rader = db.lista_lokala_avgoranden(svarandestat, importance, ar_fran, ar_till)
+    if rader is None:
+        return None
+    if artikel is not None:
+        rader = [r for r in rader if _har_artikel(r.get("artikel"), artikel)]
+
+    status = db.lokal_synkstatus()
+    totalt = len(rader)
+    sida = rader[start:start + antal]
+    log.info("Lokal sökning (%s): %d träffar", type(fel).__name__, totalt)
+    return {
+        "kalla": "lokal_cache",
+        "totalt_antal": totalt,
+        "start": start,
+        "antal_returnerade": len(sida),
+        "nasta_start": start + len(sida) if start + len(sida) < totalt else None,
+        "expansion": None,
+        "resultat": [_traff_fran_db(r) for r in sida],
+        "synkdatum": status.get("synkdatum"),
+        "anmarkning": (
+            _lokal_anmarkning(_orsak(fel), status)
+            + " Träffarna är ordnade efter publiceringsdatum, nyast först; "
+            "HUDOC:s egen rangordning finns inte lokalt."
+        ),
+    }
+
+
+def _lokal_ecli(fel: Exception, ecli: str) -> EcliSvar | None:
+    """Besvarar ett ECLI-uppslag ur lokala metadata och fulltextcache."""
+    rader = db.hamta_avgoranden_via_ecli(ecli)
+    if not rader:
+        return None
+
+    # Flera språkversioner kan dela ECLI. Välj en vars fulltext redan är
+    # cachad, annars den engelska, annars den första.
+    fulltexter = {r["itemid"]: db.hamta_fulltext_fran_cache(r["itemid"]) for r in rader}
+    rad = next((r for r in rader if fulltexter.get(r["itemid"])), None)
+    rad = rad or next((r for r in rader if r.get("sprak") == "ENG"), rader[0])
+    text = fulltexter.get(rad["itemid"])
+
+    status = db.lokal_synkstatus()
+    anmarkning = _lokal_anmarkning(_orsak(fel), status)
+    svar: EcliSvar = {
+        "metadata": _traff_fran_db(rad),
+        "metadata_kalla": "lokal_cache",
+        "fulltext": None,
+        "antal_tecken": None,
+        "kalla": None,
+        "tecken_totalt": None,
+        "trunkerad": None,
+        "fortsatt_fran_tecken": None,
+        "anmarkning": anmarkning,
+        "synkdatum": status.get("synkdatum"),
+    }
+    if text:
+        u = _skar_ut(text, ECHR_MAX_TECKEN, 0)
+        svar.update({
+            "fulltext": u["text"],
+            "antal_tecken": u["tecken_visade"],
+            "kalla": "cache",
+            "tecken_totalt": u["tecken_totalt"],
+            "trunkerad": u["trunkerad"],
+            "fortsatt_fran_tecken": u["fortsatt_fran_tecken"],
+        })
+    else:
+        svar["anmarkning"] = (
+            f"{anmarkning} Fulltexten till {rad['itemid']} finns inte i den lokala cachen."
+        )
+    return svar
+
+
+# ---------------------------------------------------------------------------
 # MCP-verktyg
 # ---------------------------------------------------------------------------
 
@@ -567,11 +733,21 @@ def echr_search(
 
     try:
         svar = _hudoc_sok_live(query, start=start, antal=antal)
-    except BotskyddFel as e:
-        raise ToolError(str(e)) from e
-    except requests.RequestException as e:
-        log.error("echr_search fel: %s", e)
-        raise _hudoc_fel(e) from e
+    except (BotskyddFel, requests.RequestException) as e:
+        log.warning("echr_search: HUDOC otillgänglig: %s", e)
+        lokalt = _lokal_sokning(
+            e, fritextsokning, respondent, artikel, importance,
+            ar_fran, ar_till, samling, start, antal,
+        )
+        if lokalt is not None:
+            return lokalt
+        tips = (
+            " Utan fritext och samling kan svenska mål (respondent=SWE) och "
+            "avgöranden med importance=1 besvaras ur lokala metadata."
+        )
+        if isinstance(e, BotskyddFel):
+            raise ToolError(f"{e}{tips}") from e
+        raise ToolError(f"{_hudoc_fel(e)}{tips}") from e
 
     rader = svar.get("results", [])
     totalt = svar.get("resultcount", 0)
@@ -664,11 +840,13 @@ def echr_hitta_via_ecli(ecli: str) -> EcliSvar:
         query = f'{_HUDOC_BAS_QUERY} AND (ecli="{ecli}")'
         svar = _hudoc_sok_live(query, antal=1)
         rader = svar.get("results", [])
-    except BotskyddFel as e:
-        raise ToolError(str(e)) from e
-    except requests.RequestException as e:
-        log.error("echr_hitta_via_ecli fel: %s", e)
-        raise _hudoc_fel(e) from e
+    except (BotskyddFel, requests.RequestException) as e:
+        log.warning("echr_hitta_via_ecli: HUDOC otillgänglig: %s", e)
+        lokalt = _lokal_ecli(e, ecli)
+        if lokalt is not None:
+            return lokalt
+        grund = str(e) if isinstance(e, BotskyddFel) else str(_hudoc_fel(e))
+        raise ToolError(f"{grund} ECLI {ecli!r} finns inte heller i de lokala metadata.") from e
 
     if not rader:
         raise ToolError(f"Inget avgörande hittades för ECLI {ecli!r}. Kontrollera formatet.")
@@ -688,6 +866,7 @@ def _ecli_svar(metadata: Traff, itemid: str) -> EcliSvar:
     except ToolError as e:
         return {
             "metadata": metadata,
+            "metadata_kalla": "hudoc",
             "fulltext": None,
             "antal_tecken": None,
             "kalla": None,
@@ -698,6 +877,7 @@ def _ecli_svar(metadata: Traff, itemid: str) -> EcliSvar:
         }
     return {
         "metadata": metadata,
+        "metadata_kalla": "hudoc",
         "fulltext": dom["fulltext"],
         "antal_tecken": dom["antal_tecken"],
         "kalla": dom["kalla"],
