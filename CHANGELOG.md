@@ -24,6 +24,12 @@ och versionshanteringen följer [Semantic Versioning](https://semver.org/).
 - Alla verktyg har titel, annotationer och typade svar (`outputSchema` och
   `structuredContent`). Sökverktygen bär fältet `kalla`
   (`hudoc` eller `lokal_cache`), `echr_hitta_via_ecli` fältet `metadata_kalla`.
+- Metadatafält i träffar normaliseras: tal, listor och text från HUDOC blir
+  text, `importance` alltid heltal som text. Fält som saknas blir `null` i
+  stället för tom sträng.
+- `respondent`, `samling` och `ecli` valideras mot sitt format innan de sätts
+  in i HUDOC-frågan; ett ogiltigt värde ger ett fel som visar rätt format.
+  Citattecken och parenteser rensas ur fritexttermer.
 
 ### Tillagt
 
@@ -33,6 +39,8 @@ och versionshanteringen följer [Semantic Versioning](https://semver.org/).
   `cf-mitigated` eller utmaningssidan). Verktygen svarar med ett begripligt
   fel, och servern avstår från nya anrop under `HUDOC_BOTSKYDD_PAUS_MINUTER`
   (standard 10).
+- Igenkänning av HTTP 429 från HUDOC: begripligt fel och paus enligt
+  `Retry-After` (sekunder eller HTTP-datum), högst en timme.
 - Lokala metadata som reserv när HUDOC inte svarar: sökning utan fritext på
   `respondent=SWE` eller `importance=1`, samt ECLI-uppslag. Svaret säger att
   det kommer ur lokal cache och anger synkdatum.
@@ -45,6 +53,12 @@ och versionshanteringen följer [Semantic Versioning](https://semver.org/).
   misslyckats, och räknade rader som sparade även när databasen avvisat dem.
   Checkpointen flyttas nu bara fram när alla filter hämtats och alla rader
   sparats, och skriptet avslutar med kod 1 vid fel.
+- Synkskriptet räknade en sidhämtning som slutade före `resultcount` som
+  lyckad. Den räknas nu som fel, och checkpointen står kvar.
+- Datum som inte går att tolka sparades som rå sträng, vilket fick Postgres
+  att avvisa hela raden. De sparas nu som `NULL` med en varning i loggen.
+- Ett ogiltigt `HUDOC_BOTSKYDD_PAUS_MINUTER` kraschade starten. Standardvärdet
+  används nu, med en varning.
 - Omdirigeringen av fil-deskriptor 1 under HTTP-anrop är borttagen. Med
   verktyg på arbetstrådar kunde den skicka andra anrops protokollsvar till
   loggfilen.
