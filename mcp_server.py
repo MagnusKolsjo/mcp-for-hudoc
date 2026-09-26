@@ -43,7 +43,7 @@ from mcp_transport import starta
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-SERVER_VERSION = "2.1.0"
+SERVER_VERSION = "3.0.0"
 
 HUDOC_TIMEOUT         = int(os.getenv("HUDOC_TIMEOUT", "30"))
 HUDOC_SOKRESULTAT_MAX = int(os.getenv("HUDOC_SOKRESULTAT_MAX", "50"))

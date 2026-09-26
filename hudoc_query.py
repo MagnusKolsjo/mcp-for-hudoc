@@ -47,7 +47,7 @@ FULLTEXT_URL  = f"{HUDOC_BAS_URL}/app/conversion/docx/html/body"
 
 # Projektets egen User-Agent. Den identifierar anropen som automatiserade och
 # pekar på repot, så att källan kan se vem som frågar och höra av sig.
-STANDARD_USER_AGENT = "mcp-for-hudoc/1.0 (+https://github.com/MagnusKolsjo/mcp-for-hudoc)"
+STANDARD_USER_AGENT = "mcp-for-hudoc/3.0 (+https://github.com/MagnusKolsjo/mcp-for-hudoc)"
 
 # HUDOC:s results-endpoint kräver rankingModelId; utan den svarar den 404.
 RANKING_MODEL_ID = "4180000c-8692-45ca-ad63-74bc4163871b"

@@ -5,11 +5,14 @@ och versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-09-26
+
 ### Dokumentation
 - README beskriver att HUDOC sedan 2026-09-15 stoppar alla automatiserade anrop och att live-hämtning kräver vitlistning, med instruktion för hur det begärs och följs upp.
 
 ### Ändrat
 
+- User-Agent-strängen följer huvudversionen: `mcp-for-hudoc/3.0`.
 - **Brytande:** kräver MCP Python SDK 2.x (`mcp>=2.0,<3`). Servern bygger på
   `MCPServer`, och transporten startas via `mcp_transport.starta()`.
 - **Brytande:** http-läget kräver `MCP_API_KEY` och startar inte utan den
