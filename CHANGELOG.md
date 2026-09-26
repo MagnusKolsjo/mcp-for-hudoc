@@ -12,6 +12,7 @@ och versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ### Ändrat
 
+- Frågeexpansion på serversidan har inget förvalt modellnamn. `QUERY_EXPANSION_MODEL` anges alltid i `.env` (platshållare `<modellnamn>` i `config.example.env`); saknas det hoppas expansionen över.
 - User-Agent-strängen följer huvudversionen: `mcp-for-hudoc/3.0`.
 - **Brytande:** kräver MCP Python SDK 2.x (`mcp>=2.0,<3`). Servern bygger på
   `MCPServer`, och transporten startas via `mcp_transport.starta()`.
