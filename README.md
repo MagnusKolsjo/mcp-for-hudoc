@@ -15,8 +15,10 @@ Europakonventionen är grundlagsskyddad i Sverige (RF 2:19) och Europadomstolens
 
 ## Datakälla
 
-HUDOC är Europadomstolens officiella databas. Ingen autentisering krävs, men se
-[Botskydd](#botskydd-och-lokal-reserv) nedan.
+HUDOC är Europadomstolens officiella databas. Ingen autentisering krävs, men
+sedan 2026-09-15 stoppar HUDOC automatiserade anrop, och live-hämtning kräver
+att installationen vitlistas. Se [Botskydd](#botskydd-och-lokal-reserv) och
+[Vitlistning](#vitlistning) nedan.
 
 - Portal: https://hudoc.echr.coe.int/
 - ~230 000 dokument (domar, beslut, kommunicerade mål m.m.)
@@ -85,10 +87,12 @@ http-läget (exitkod 2).
 
 ## Botskydd och lokal reserv
 
-HUDOC ligger bakom Cloudflare och kan svara med en botkontroll ("Just a
+HUDOC ligger bakom Cloudflare och svarar sedan 2026-09-15 på alla
+automatiserade anrop, både sökning och fulltext, med en botkontroll ("Just a
 moment…", HTTP 403 med `cf-mitigated: challenge`) i stället för data. Det är
 källans val att stoppa automatiserade anrop, och servern försöker inte ta sig
-förbi kontrollen.
+förbi kontrollen. Utan vitlistning fungerar därför bara den lokala reserven
+nedan.
 
 När det händer:
 
@@ -112,6 +116,25 @@ User-Agent i alla anrop, från både servern och synkskriptet, sätts med
 `HUDOC_USER_AGENT` i `.env`. Standard är projektets egen identifierare med
 länk till repot; en egen installation bör gärna ange en egen identifierare
 med kontaktadress.
+
+### Vitlistning
+
+För att sökning, fulltext och den dagliga synken ska fungera igen måste
+Europadomstolen vitlista installationen:
+
+1. Kontakta Europadomstolen via https://www.echr.coe.int/hudoc-database och
+   beskriv användningen: ett ideellt verktyg för rättsinformation, få och
+   glesa anrop, vilken User-Agent och helst vilken IP-adress anropen kommer
+   från.
+2. Ange den vitlistade identifieraren i `.env`:
+
+   ```
+   HUDOC_USER_AGENT=<projektnamn>/<version> (+<url>; <kontaktadress>)
+   ```
+
+3. Kör en full synk när anropen går igenom, eftersom den lokala metadatan
+   annars saknar allt som publicerats sedan blockeringen började:
+   `python3 02_synka_metadata.py --force-full`.
 
 ## Svarsstorlek och trunkering
 

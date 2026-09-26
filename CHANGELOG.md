@@ -5,6 +5,9 @@ och versionshanteringen följer [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Dokumentation
+- README beskriver att HUDOC sedan 2026-09-15 stoppar alla automatiserade anrop och att live-hämtning kräver vitlistning, med instruktion för hur det begärs och följs upp.
+
 ### Ändrat
 
 - **Brytande:** kräver MCP Python SDK 2.x (`mcp>=2.0,<3`). Servern bygger på
